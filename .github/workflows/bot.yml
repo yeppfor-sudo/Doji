@@ -1,21 +1,20 @@
-name: MEXC Bottom Scanner
+name: 1D Reversal Vol RSI
+
 on:
   schedule:
-    - cron: '5 0 * * *'  # Daily at 5:05 AM PKT = 00:05 UTC - daily close
-    - cron: '5 4,8,12,16,20 * * *' # also scan today intraday every 4h
+    - cron: '5 0 * * *'  # 00:05 UTC after 1D close
   workflow_dispatch:
+
 jobs:
   scan:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v3
-      - uses: actions/setup-python@v4
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
         with:
-          python-version: '3.10'
-      - name: Install
-        run: pip install requests pandas numpy matplotlib
-      - name: Run Scanner
-        env:
-          TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+          python-version: '3.11'
+      - run: pip install ccxt pandas matplotlib requests
+      - env:
+          BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
           CHAT_ID: ${{ secrets.CHAT_ID }}
         run: python bot.py
