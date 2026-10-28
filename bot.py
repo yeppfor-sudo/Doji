@@ -61,8 +61,7 @@ def chart(res,sym,exn):
     return fig
 
 # EXCHANGES THAT WORK IN US GITHUB - NO BYBIT
-EXS=[('MEXC',ccxt.mexc),('OKX',ccxt.okx),('GATE',ccxt.gateio),('BITGET',ccxt.bitget),('KUCOIN',ccxt.kucoin)]
-
+EXS=[('MEXC',ccxt.mexc),('OKX',ccxt.okx),('GATE',ccxt.gate),('BITGET',ccxt.bitget),('KUCOIN',ccxt.kucoin)]
 total=0; scanned=0; errors=[]
 for exn, cls in EXS:
     try:
