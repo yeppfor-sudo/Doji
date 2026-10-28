@@ -2,8 +2,7 @@ import ccxt, pandas as pd, requests, os, io, time
 import matplotlib.pyplot as plt
 from datetime import datetime
 
-BOT_TOKEN = os.getenv("BOT_TOKEN")
-CHAT_ID = os.getenv("CHAT_ID")
+BOT_TOKEN=os.getenv("BOT_TOKEN"); CHAT_ID=os.getenv("CHAT_ID")
 
 def send_text(msg):
     try:
@@ -13,15 +12,14 @@ def send_text(msg):
 
 def send_photo(fig, cap):
     try:
-        buf=io.BytesIO()
-        fig.savefig(buf,format='png',dpi=130,bbox_inches='tight')
+        buf=io.BytesIO(); fig.savefig(buf,format='png',dpi=130,bbox_inches='tight')
         buf.seek(0); plt.close(fig)
         requests.post(f"https://api.telegram.org/bot{BOT_TOKEN}/sendPhoto",
             data={"chat_id":CHAT_ID,"caption":cap,"parse_mode":"HTML"},
             files={"photo":buf}, timeout=25)
-    except Exception as e: print(f"photo fail {e}")
+    except Exception as e: print(e)
 
-send_text(f"🚀 <b>Bot started {datetime.utcnow().strftime('%H:%M UTC')}</b>\nScanning MEXC+BYBIT+OKX...")
+send_text(f"🚀 <b>Bot started {datetime.utcnow().strftime('%H:%M UTC')}</b>\nScanning...")
 
 def ema(s,n): return s.ewm(span=n, adjust=False).mean()
 def rsi(s,p=14):
@@ -46,7 +44,7 @@ def scan(df):
             if w['rsi'].min()>50 and df['rsi'].iloc[end]>55: continue
             curr=df.iloc[end]['c']; sl=low*0.96; risk=curr-sl
             if risk<=0: continue
-            return {'s':s,'e':end,'ws':ws,'low':low,'curr':curr,'sl':sl,'tp':curr+risk*2.8,'df':df,'rsi':df['rsi'].iloc[end]}
+            return {'s':s,'e':end,'ws':ws,'curr':curr,'sl':sl,'tp':curr+risk*2.8,'df':df,'rsi':df['rsi'].iloc[end]}
     return None
 
 def chart(res,sym,exn):
@@ -62,13 +60,16 @@ def chart(res,sym,exn):
     ax.set_title(f"{sym} {exn} RSI{res['rsi']:.1f}"); ax.grid(alpha=0.2)
     return fig
 
-total=0; scanned=0
-for exn, cls in [('MEXC',ccxt.mexc),('BYBIT',ccxt.bybit),('OKX',ccxt.okx)]:
+# EXCHANGES THAT WORK IN US GITHUB - NO BYBIT
+EXS=[('MEXC',ccxt.mexc),('OKX',ccxt.okx),('GATE',ccxt.gateio),('BITGET',ccxt.bitget),('KUCOIN',ccxt.kucoin)]
+
+total=0; scanned=0; errors=[]
+for exn, cls in EXS:
     try:
         ex=cls({'enableRateLimit':True,'options':{'defaultType':'swap'}})
         ex.load_markets()
-        syms=[s for s in ex.markets if '/USDT:USDT' in s][:600]
-        print(f"{exn} {len(syms)} markets")
+        syms=[s for s in ex.markets if 'USDT' in s and (':USDT' in s or '/USDT' in s)][:500]
+        print(f"{exn} {len(syms)}")
         for sym in syms:
             try:
                 ohlcv=ex.fetch_ohlcv(sym,'1D',limit=90)
@@ -77,16 +78,14 @@ for exn, cls in [('MEXC',ccxt.mexc),('BYBIT',ccxt.bybit),('OKX',ccxt.okx)]:
                 scanned+=1
                 res=scan(df)
                 if res:
-                    clean=sym.replace('/USDT:USDT','').replace('/USDT','')
+                    clean=sym.split('/')[0].split(':')[0]
                     fig=chart(res,clean,exn)
-                    cap=f"🔥 <b>{clean} {exn}</b> {res['ws']}c Bottom RSI{res['rsi']:.1f}\nPrice {res['curr']:.6f} SL {res['sl']:.6f} TP {res['tp']:.6f}"
+                    cap=f"🔥 <b>{clean} {exn}</b> {res['ws']}c RSI{res['rsi']:.1f}\nPrice {res['curr']:.6f} SL {res['sl']:.6f} TP {res['tp']:.6f}"
                     send_photo(fig,cap); total+=1
-                    time.sleep(0.6)
+                    time.sleep(0.5)
                     if total>=20: break
-            except Exception as e: continue
+            except: continue
     except Exception as e:
-        print(f"{exn} load err {e}")
-        send_text(f"⚠️ {exn} load error: {e}")
-        continue
+        print(f"{exn} fail {e}"); errors.append(f"{exn} fail"); continue
 
-send_text(f"✅ <b>Done</b> Scanned {scanned} Found {total}\nLoosened: 20% bottom, RSI<50/55")
+send_text(f"✅ <b>Done</b> Scanned {scanned} Found {total}\nErrors: {', '.join(errors) if errors else 'none'}")
