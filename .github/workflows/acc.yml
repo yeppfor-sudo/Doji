@@ -1,4 +1,4 @@
-name: Memory Bot 12H Final
+name: Futures Memory Bot
 on:
   schedule:
     - cron: '0 */6 * * *'
