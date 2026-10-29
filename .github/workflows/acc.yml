@@ -1,7 +1,7 @@
-name: Accumulation Bot
+name: Memory Bot 12H Final
 on:
   schedule:
-    - cron: '0 */6 * * *'  # Every 6 hours - 4x per day
+    - cron: '0 */6 * * *'
   workflow_dispatch:
 jobs:
   run:
@@ -10,8 +10,14 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v4
         with: {python-version: '3.11'}
-      - run: pip install ccxt pandas requests
+      - run: pip install ccxt pandas requests matplotlib
       - run: python accumulation_bot.py
         env:
           BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
           CHAT_ID: ${{ secrets.CHAT_ID }}
+      - run: |
+          git config user.name "bot"
+          git config user.email "bot@bot.com"
+          git add accumulation_memory.json || true
+          git commit -m "memory update" || true
+          git push || true
