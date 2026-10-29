@@ -3,8 +3,8 @@ from datetime import datetime, timedelta
 
 BOT_TOKEN=os.getenv("BOT_TOKEN"); CHAT_ID=os.getenv("CHAT_ID")
 
-# BLACKLIST - No stocks
-BLACKLIST = {'EWJ','KWEB','RKLB','STOCK','NVDA','AAPL','QQQ','SPY','ETF','US30','NAS100','KWEB','EWJ','STOCK'}
+# BLACKLIST - Expanded
+BLACKLIST = {'EWJ','KWEB','RKLB','STOCK','NVDA','AAPL','QQQ','SPY','ETF','US30','NAS100','KWEB','EWJ','STOCK','SPX','SPX500','NAS','DJI','DJIA','UK100','GER40','XAU','XAG','GOLD','SILVER','OIL','WTI','BRENT','EUR','GBP','JPY','AUD','CAD','CHF','NZD','USDC','BUSD','FDUSD','TUSD','DAI','USDE','EURC','USDP','GUSD','PYUSD','EURI'}
 MEMORY_FILE="accumulation_memory.json"
 
 def t(m):
@@ -17,13 +17,28 @@ def t(m):
 def ema(s,n): return s.ewm(span=n, adjust=False).mean()
 
 def is_valid_crypto(sym):
-    s=sym.upper()
-    if any(x in s for x in BLACKLIST): return False
-    if 'STOCK' in s or '/USDT:USDT' not in sym: return False
-    if not sym.endswith('USDT:USDT'): return False
-    # Only crypto - filter .S .P etc
-    base=sym.split('/')[0]
-    if len(base) > 12: return False
+    # ONLY USDT PERP - nothing else
+    if not sym.endswith('USDT:USDT'):
+        return False
+    s = sym.upper()
+    base = s.split('/')[0]
+    
+    # Block list check
+    if base in BLACKLIST:
+        return False
+    if any(x in s for x in BLACKLIST):
+        return False
+    # Block stocks/indices/forex markers
+    if any(x in s for x in ['STOCK','INDEX','500','100','30','EUR/','GBP/','USD/','JPY/','XAU','XAG']):
+        return False
+    # Only crypto - base 2-7 letters, no digits like SPX500
+    if len(base) < 2 or len(base) > 7:
+        return False
+    if any(c.isdigit() for c in base):
+        return False
+    # Block stablecoins as base
+    if base in {'USDC','USDT','BUSD','FDUSD','TUSD','DAI','USDE'}:
+        return False
     return True
 
 def detect_accumulation_days(df_1d):
@@ -34,20 +49,18 @@ def detect_accumulation_days(df_1d):
     df_1d['range']=(df_1d['h']-df_1d['l'])/df_1d['c']
     
     last = df_1d.iloc[-1]
-    last_3 = df_1d.iloc[-4:-1]  # Last 3 days before today
+    last_3 = df_1d.iloc[-4:-1]
     
-    # 1. Days of tight accumulation - 3-4 days range <1.2%
-    tight_days = (last_3['range'] < 0.012).sum()  # Tight
+    tight_days = (last_3['range'] < 0.012).sum()
     avg_range = last_3['range'].mean()
     
-    # 2. At bottom - near 30 day low
+    # NEW: Skip stablecoin/fiat ultra tight <0.15% like USDC 0.08% in your screenshot
+    if avg_range < 0.0015:
+        return False, 0, ""
+    
     low_30 = df_1d['l'].iloc[-30:].min()
-    near_bottom = last['c'] <= low_30 * 1.25  # Within 25% of bottom
-    
-    # 3. Below EMA20 still - not yet breakout on daily
+    near_bottom = last['c'] <= low_30 * 1.25
     below_ema = last['c'] < last['ema20'] * 1.02
-    
-    # 4. Volume dry - accumulation volume less than average
     vol_dry = last['v'] < df_1d['v'].iloc[-20:].mean() * 1.2
     
     if tight_days >= 2 and near_bottom and below_ema and avg_range < 0.015:
@@ -57,27 +70,19 @@ def detect_accumulation_days(df_1d):
     return False, 0, ""
 
 def detect_8h_breakout(df_8h):
-    """8H solid candle breakout EMA20 - your trigger"""
+    """8H solid candle breakout EMA20"""
     if len(df_8h) < 30: return False, ""
-    
     df_8h['ema20']=ema(df_8h['c'],20)
     df_8h['ema6']=ema(df_8h['c'],6)
     df_8h['ema12']=ema(df_8h['c'],12)
-    
     last = df_8h.iloc[-1]
     prev = df_8h.iloc[-2]
-    
-    # Solid candle - body >60% of range, green, volume
     body = abs(last['c']-last['o'])
     range_c = last['h']-last['l']
     solid = body / range_c > 0.6 if range_c > 0 else False
     green = last['c'] > last['o']
-    
-    # Breakout EMA20 - close above EMA20, previous below or touching
     breakout = last['c'] > last['ema20'] and prev['c'] <= last['ema20']*1.005
-    # Also above EMA6 and EMA12 like screenshot
     above_all = last['c'] > last['ema6'] and last['c'] > last['ema12']
-    
     if breakout and solid and green and above_all:
         reason = f"8H SOLID Breakout EMA20 {last['ema20']:.6f} Close {last['c']:.6f} Body {body/range_c*100:.0f}%"
         return True, reason
@@ -87,7 +92,6 @@ def load_memory():
     if os.path.exists(MEMORY_FILE):
         try: 
             data=json.loads(open(MEMORY_FILE).read())
-            # Clean old >7 days
             cutoff = datetime.utcnow() - timedelta(days=7)
             cleaned = {k:v for k,v in data.items() if datetime.fromisoformat(v['first_seen']) > cutoff}
             return cleaned
@@ -99,9 +103,8 @@ def save_memory(mem):
     except: pass
 
 # MAIN
-t(f"🔍 ACCUMULATION MEMORY BOT {datetime.utcnow().strftime('%H:%M UTC')} - All CEX Scan")
+t(f"🔍 ACCUMULATION MEMORY BOT {datetime.utcnow().strftime('%H:%M UTC')} - All CEX Scan ONLY USDT CRYPTO")
 
-# Setup all CEX
 exchanges = []
 for ex_id in ['mexc','binance','bybit','okx','bitget','kucoin']:
     try:
@@ -124,13 +127,10 @@ filtered = 0
 
 for ex_id, ex in exchanges:
     try:
-        perps = [s for s in ex.markets if ':USDT' in s and is_valid_crypto(s)][:600]  # Limit per CEX
+        perps = [s for s in ex.markets if is_valid_crypto(s)][:600]
         for sym in perps:
-            clean_key = f"{sym}|{ex_id}"  # Avoid duplicate across CEX but keep exchange info
-            
-            # Skip if already in memory and not breakout yet
+            clean_key = f"{sym}|{ex_id}"
             if clean_key in memory and memory[clean_key].get('status') == 'watching':
-                # Check 8H breakout for existing memory
                 try:
                     df_8h = pd.DataFrame(ex.fetch_ohlcv(sym,'8h',limit=50), columns=['t','o','h','l','c','v'])
                     is_break, reason = detect_8h_breakout(df_8h)
@@ -144,11 +144,9 @@ for ex_id, ex in exchanges:
                 except: pass
                 continue
             
-            # New scan - 1D accumulation
             try:
                 df_1d = pd.DataFrame(ex.fetch_ohlcv(sym,'1d',limit=35), columns=['t','o','h','l','c','v'])
                 is_acc, days_acc, reason_acc = detect_accumulation_days(df_1d)
-                
                 if is_acc and clean_key not in memory:
                     base = sym.split('/')[0]
                     memory[clean_key] = {
@@ -162,10 +160,9 @@ for ex_id, ex in exchanges:
                         "price_at_save": float(df_1d.iloc[-1]['c'])
                     }
                     new_found_today += 1
-                    if new_found_today <= 10:  # Alert first 10 to avoid spam
+                    if new_found_today <= 10:
                         t(f"📦 SAVED {base} {ex_id.upper()} - {reason_acc}\nEMA20 {df_1d.iloc[-1]['ema20']:.6f} Now {df_1d.iloc[-1]['c']:.6f}\nWatching for 8H EMA20 breakout")
                     save_memory(memory)
-                
                 scanned += 1
                 if scanned % 200 == 0:
                     time.sleep(1)
@@ -175,30 +172,25 @@ for ex_id, ex in exchanges:
         t(f"Error {ex_id} {str(e)[:100]}")
         continue
 
-# Final report
 total_watching = len(memory)
 save_memory(memory)
 
 report = f"""
-✅ SCAN COMPLETE All CEX
+✅ SCAN COMPLETE All CEX ONLY USDT CRYPTO
 
 📊 Today:
 New accumulation saved: {new_found_today}
 Breakouts 8H EMA20: {breakouts_today}
 Total scanned: {scanned}
-Filtered stocks: {filtered}
+Filtered stocks/fiat/stable: {filtered}
 
 🧠 MEMORY:
 Total watching: {total_watching} pairs
-These are like your CROSS screenshot - tight bottom waiting for 8H breakout
 
 Examples in memory:
 """ + "\n".join([f"{v['base']} {v['exchange']} {v['days']}d" for k,v in list(memory.items())[:10]])
 
 t(report)
-
-# Save top watchlist for TradingView
 watchlist_text = "\n".join([f"{v['exchange']}:{v['base']}USDT" for v in memory.values()][:100])
 open("watchlist.txt","w").write(watchlist_text)
-
 t(f"✅ Memory saved {MEMORY_FILE} - Bot will keep {total_watching} pairs until 8H breakout then auto-delete")
