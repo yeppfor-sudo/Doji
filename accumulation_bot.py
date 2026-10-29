@@ -5,19 +5,16 @@ from datetime import datetime, timedelta
 BOT_TOKEN=os.getenv("BOT_TOKEN"); CHAT_ID=os.getenv("CHAT_ID")
 MEMORY_FILE="accumulation_memory.json"
 
-BLOCK_EXACT = {
- 'TLT','TLH','IEF','SHY','INDA','EWJ','EWA','EWZ','KWEB','QQQ','SPY','DIA','IWM',
- 'TRY','EUR','GBP','JPY','AUD','CAD','CHF','NZD','XAU','XAG',
- 'USDC','BUSD','FDUSD','TUSD','DAI','USDE','USDP','GUSD','PYUSD','EURI','EURC',
- 'SPX','SPX500','NAS100','NAS','NDX','DJI','DJIA','US30','UK100','GER40',
- 'RKLB','NVDA','AAPL','TSLA','MSFT','STOCK','ETF','GOLD','SILVER','OIL','WTI','BRENT',
- 'OURA','STRC','INDY','MCHI','EWW','EWC'
-}
+# ALL BLOCKS
+BLOCK_STOCKS = {'TLT','TLH','IEF','SHY','INDA','EWJ','EWA','EWZ','KWEB','QQQ','SPY','DIA','IWM','EWW','EWC','MCHI','INDY','STRC','OURA','SPX','SPX500','NAS100','DJI','US30','UK100','GER40','RKLB','NVDA','AAPL','TSLA','MSFT','STOCK','ETF','OIL','GOLD','SILVER','XAU','XAG','XAUT','PAXG','KAU','KAG','TRY','EUR','GBP','JPY','AUD','CAD','CHF','NZD','USDC','BUSD','FDUSD','TUSD','DAI','USDE','USDP','GUSD','PYUSD','EURI','EURC'}
+
+BLOCK_MEGA = {'BTC','ETH','SOL','BNB','TRX','XRP','ADA','DOGE','AVAX','DOT','LINK','LTC','BCH','XLM','ETC','HBAR','APT','NEAR','UNI','FIL','ARB','OP','ATOM','MATIC','POL','TON','SHIB','PEPE','CRO','LEO','OKB','BGB','SUI','LDO','RNDR','TAO','FET','WIF','ENA','JUP','SEI','TIA','ONDO','W','PYTH','STRK','JTO','ENS','ETC'}
+
+BLOCK_ALL = BLOCK_STOCKS | BLOCK_MEGA
 
 def send_text(msg):
     try:
-        requests.post(f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",
-            data={"chat_id":CHAT_ID,"text":msg,"parse_mode":"HTML"}, timeout=20)
+        requests.post(f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage", data={"chat_id":CHAT_ID,"text":msg,"parse_mode":"HTML"}, timeout=20)
         print(msg)
     except: pass
 
@@ -26,18 +23,17 @@ def send_photo(fig, cap):
         buf=io.BytesIO()
         fig.savefig(buf,format='png',dpi=150,bbox_inches='tight')
         buf.seek(0); plt.close(fig)
-        requests.post(f"https://api.telegram.org/bot{BOT_TOKEN}/sendPhoto",
-            data={"chat_id":CHAT_ID,"caption":cap,"parse_mode":"HTML"},
-            files={"photo":buf}, timeout=30)
-    except Exception as e: print(f"Photo {e}")
+        requests.post(f"https://api.telegram.org/bot{BOT_TOKEN}/sendPhoto", data={"chat_id":CHAT_ID,"caption":cap,"parse_mode":"HTML"}, files={"photo":buf}, timeout=30)
+    except Exception as e: print(f"Photo error {e}")
 
 def ema(s,n): return s.ewm(span=n, adjust=False).mean()
 
 def is_valid_crypto(sym):
     if not sym.endswith('USDT:USDT'): return False
     base = sym.split('/')[0].upper()
-    if base in BLOCK_EXACT: return False
-    if len(base) < 2 or len(base) > 7: return False
+    if base in BLOCK_ALL: return False
+    if any(x in base for x in ['XAU','PAXG','GOLD','XAG']): return False
+    if len(base) < 2 or len(base) > 8: return False
     if any(c.isdigit() for c in base): return False
     if not base.isalpha(): return False
     return True
@@ -50,11 +46,11 @@ def detect_accumulation_days(df_1d):
     last_4 = df_1d.iloc[-5:-1]
     tight_days = (last_4['range'] < 0.013).sum()
     avg_range = last_4['range'].mean()
-    if avg_range < 0.0015: return False, 0, ""
+    if avg_range < 0.0015 or avg_range > 0.016: return False, 0, ""
     low_30 = df_1d['l'].iloc[-30:].min()
     near_bottom = last['c'] <= low_30 * 1.30
     below_ema = last['c'] < last['ema20'] * 1.03
-    if tight_days >= 2 and near_bottom and below_ema and avg_range < 0.016:
+    if tight_days >= 2 and near_bottom and below_ema:
         return True, tight_days+1, f"Tight {tight_days+1}d {avg_range*100:.2f}%"
     return False, 0, ""
 
@@ -116,7 +112,13 @@ def load_memory():
         try:
             data=json.loads(open(MEMORY_FILE).read())
             cutoff = datetime.utcnow() - timedelta(days=8)
-            return {k:v for k,v in data.items() if datetime.fromisoformat(v['first_seen']) > cutoff and v['base'] not in BLOCK_EXACT}
+            cleaned = {}
+            for k,v in data.items():
+                b = v.get('base',k).upper()
+                if datetime.fromisoformat(v['first_seen']) > cutoff and b not in BLOCK_ALL:
+                    if 'XAU' not in b and 'PAXG' not in b:
+                        cleaned[b]=v
+            return cleaned
         except: pass
     return {}
 
@@ -125,7 +127,7 @@ def save_memory(mem):
     except: pass
 
 # MAIN
-send_text(f"🚀 <b>MEMORY BOT 12H FINAL {datetime.utcnow().strftime('%H:%M UTC')}</b>")
+send_text(f"🚀 <b>FINAL BOT 12H - NO MEGA NO GOLD {datetime.utcnow().strftime('%H:%M UTC')}</b>")
 
 EXS = [
     ('BINANCE', ccxt.binanceusdm, {'enableRateLimit': True}),
@@ -138,17 +140,15 @@ EXS = [
 ]
 
 memory = load_memory()
-send_text(f"🧠 Memory: {len(memory)} unique coins watching")
-
+send_text(f"🧠 Memory: {len(memory)} unique small caps watching")
 seen_bases = set(memory.keys())
 new_today = 0; breakouts = 0; scanned = 0
 
 for exn, cls, opts in EXS:
     try:
         ex = cls(opts); ex.load_markets()
-        syms = [s for s in ex.markets if is_valid_crypto(s)]  # ALL, NO LIMIT
-        send_text(f"📊 {exn}: {len(syms)} USDT PERP")
-        
+        syms = [s for s in ex.markets if is_valid_crypto(s)]
+        send_text(f"📊 {exn}: {len(syms)} USDT PERP (mega+gold removed)")
         for sym in syms:
             base = sym.split('/')[0].upper()
             if base in memory:
@@ -158,32 +158,21 @@ for exn, cls, opts in EXS:
                     if is_break:
                         df_1d = pd.DataFrame(ex.fetch_ohlcv(sym,'1d',limit=80), columns=['t','o','h','l','c','v'])
                         fig = chart_accumulation(df_1d, df_12h, base, exn, memory[base]['days'], reason)
-                        cap = f"🚀 <b>BREAKOUT 12H EMA20 {base} {exn}</b>\n{reason}\nAccumulated {memory[base]['days']}d since {memory[base]['first_seen'][:10]}\nPrice {df_12h.iloc[-1]['c']:.6f}\n🔥 Deleted from memory"
+                        cap = f"🚀 <b>BREAKOUT 12H {base} {exn}</b>\n{reason}\nAccumulated {memory[base]['days']}d since {memory[base]['first_seen'][:10]}\nPrice {df_12h.iloc[-1]['c']:.6f}\n🔥 Deleted from memory"
                         send_photo(fig, cap)
-                        del memory[base]
-                        breakouts+=1
-                        save_memory(memory)
+                        del memory[base]; breakouts+=1; save_memory(memory)
                         time.sleep(0.6)
                 except: continue
                 continue
-            
             if base in seen_bases: continue
-            
             try:
                 df_1d = pd.DataFrame(ex.fetch_ohlcv(sym,'1d',limit=45), columns=['t','o','h','l','c','v'])
                 is_acc, days_acc, reason_acc = detect_accumulation_days(df_1d)
                 scanned+=1
                 if is_acc:
                     low_30 = df_1d['l'].iloc[-30:].min()
-                    memory[base] = {
-                        "symbol": sym, "base": base, "exchange": exn,
-                        "days": days_acc, "reason": reason_acc,
-                        "first_seen": datetime.utcnow().isoformat(),
-                        "price_at_save": float(df_1d.iloc[-1]['c']),
-                        "low_30": float(low_30)
-                    }
-                    seen_bases.add(base)
-                    new_today+=1
+                    memory[base] = {"symbol": sym, "base": base, "exchange": exn, "days": days_acc, "reason": reason_acc, "first_seen": datetime.utcnow().isoformat(), "price_at_save": float(df_1d.iloc[-1]['c']), "low_30": float(low_30)}
+                    seen_bases.add(base); new_today+=1
                     if new_today <= 12:
                         fig = chart_acc_only(df_1d, base, exn, days_acc)
                         cap = f"📦 <b>SAVED {base} {exn}</b>\n{reason_acc}\nEMA20 {ema(df_1d['c'],20).iloc[-1]:.6f} Price {df_1d.iloc[-1]['c']:.6f}\nWatching 12H EMA20 breakout"
@@ -196,4 +185,4 @@ for exn, cls, opts in EXS:
         continue
 
 save_memory(memory)
-send_text(f"✅ <b>DONE</b> Scanned {scanned} New {new_today} Breakouts 12H {breakouts}\n🧠 Total {len(memory)} unique coins in memory until breakout")
+send_text(f"✅ <b>DONE FINAL</b> Scanned {scanned} New {new_today} Breakouts 12H {breakouts}\n🧠 Total {len(memory)} unique small caps only - No BTC SOL BNB TRX XAUT PAXG")
