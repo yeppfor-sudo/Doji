@@ -5,9 +5,8 @@ from datetime import datetime
 BOT_TOKEN=os.getenv("BOT_TOKEN"); CHAT_ID=os.getenv("CHAT_ID")
 
 def send_text(msg):
-    try:
-        requests.post(f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",
-            data={"chat_id":CHAT_ID,"text":msg,"parse_mode":"HTML"}, timeout=20)
+    try: requests.post(f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage",
+        data={"chat_id":CHAT_ID,"text":msg,"parse_mode":"HTML"}, timeout=20)
     except: pass
 
 def ema(s,n): return s.ewm(span=n, adjust=False).mean()
@@ -29,9 +28,9 @@ def scan(df):
     if last['l'] > low7*1.12: return None
     if last['l'] > low60*1.25: return None
     if last['rsi'] > 65 or last['rsi'] < 18: return None
+    if last['c'] > last['ema20']*1.15: return None
     for ws in [4,5]:
-        s=len(df)-ws-1; e=len(df)-1
-        w=df.iloc[s:e+1]
+        w=df.iloc[len(df)-ws-1:len(df)-1]
         low=w['l'].min(); high=w['h'].max()
         if (high-low)/low > 0.12: continue
         if not (last['c'] > last['o'] and last['c'] >= last['ema20']*0.98): continue
@@ -55,15 +54,13 @@ def chart(res,sym,exn):
     ax.plot(df.index, df['ema20'].tail(70), color='#5b4cff', lw=1.8)
     ax.axhline(res['high'], color='orange', ls=':', lw=2)
     ax.axhline(res['sl'], color='red', ls='--')
-    ax.set_title(f"{sym} GREEN CLOSE TOUCH {exn} RSI {res['rsi']:.1f}", fontsize=11, color='green', fontweight='bold')
+    ax.set_title(f"{sym} GREEN CLOSE TOUCH {exn} RSI {res['rsi']:.1f} Vol {res['vol']:.1f}x", fontsize=11, color='green', fontweight='bold')
     ax.grid(alpha=0.2)
     return fig
 
-send_text(f"🚀 Scanning {datetime.utcnow().strftime('%H:%M UTC')}")
-
-BLACKLIST={'BTC','ETH','BNB','SOL','XRP'}
+send_text(f"🚀 Scanning CROSS pattern {datetime.utcnow().strftime('%H:%M UTC')}")
+BLACKLIST={'BTC','ETH','BNB','SOL','XRP','EWJ','KWEB','RKLB','SPX','STOCK','NVDA','AAPL'}
 EXS=[('MEXC',ccxt.mexc,{'enableRateLimit':True}),('OKX',ccxt.okx,{'enableRateLimit':True}),('GATE',ccxt.gate,{'enableRateLimit':True}),('BITGET',ccxt.bitget,{'enableRateLimit':True})]
-
 found=[]
 for exn,cls,opts in EXS:
     try:
@@ -71,7 +68,8 @@ for exn,cls,opts in EXS:
         syms=[m['symbol'] for m in ex.markets.values() if 'USDT' in m['symbol'] and ':USDT' in m['symbol']][:350]
         for sym in syms:
             clean=sym.split('/')[0]
-            if any(b in clean.upper() for b in BLACKLIST): continue
+            if any(b in clean for b in BLACKLIST): continue
+            if 'STOCK' in sym: continue
             try:
                 ohlcv=ex.fetch_ohlcv(sym,'1d',limit=80)
                 if len(ohlcv)<70: continue
@@ -82,12 +80,11 @@ for exn,cls,opts in EXS:
     except: continue
 
 top=sorted(found, key=lambda x: x[0], reverse=True)[:10]
-send_text(f"📊 Found {len(found)} total → Sending TOP {len(top)}")
+send_text(f"📊 Found {len(found)} total (was 138) → TOP {len(top)} (CROSS included)")
 for score,clean,exn,res in top:
     fig=chart(res,clean,exn)
-    cap=f"🔥 {clean} {exn} 4c RSI{res['rsi']:.1f}\nPrice {res['curr']:.6f} SL {res['sl']:.6f} TP {res['tp1']:.6f}\nGreen Close Touch {res['high']:.4f} Vol {res['vol']:.1f}x\nTIGHT BOTTOM Rank {top.index((score,clean,exn,res))+1}/{len(top)}"
+    cap=f"🔥 {clean} {exn} 4c RSI{res['rsi']:.1f}\nPrice {res['curr']:.6f} SL {res['sl']:.6f} TP {res['tp1']:.6f}\nGreen Close Touch {res['high']:.4f} Vol {res['vol']:.1f}x 7dLow {res['low7']:.4f}\nRank {top.index((score,clean,exn,res))+1}/{len(top)} Score {score:.1f}"
     buf=io.BytesIO(); fig.savefig(buf,format='png',dpi=140,bbox_inches='tight'); buf.seek(0); plt.close(fig)
     requests.post(f"https://api.telegram.org/bot{BOT_TOKEN}/sendPhoto", data={"chat_id":CHAT_ID,"caption":cap,"parse_mode":"HTML"}, files={"photo":buf}, timeout=25)
     time.sleep(0.6)
-
-send_text(f"✅ Done {len(found)} → TOP {len(top)}")
+send_text(f"✅ Done {len(found)} → TOP {len(top)} sent. CROSS pattern fixed, EWJ stock removed")
