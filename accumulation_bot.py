@@ -5,11 +5,13 @@ from datetime import datetime, timedelta
 BOT_TOKEN=os.getenv("BOT_TOKEN"); CHAT_ID=os.getenv("CHAT_ID")
 MEMORY_FILE="accumulation_memory.json"
 
-BLOCK_STOCKS = {'TLT','TLH','IEF','SHY','INDA','EWJ','EWA','EWZ','KWEB','QQQ','SPY','DIA','IWM','EWW','EWC','MCHI','INDY','STRC','OURA','SPX','SPX500','NAS100','DJI','US30','UK100','GER40','RKLB','NVDA','AAPL','TSLA','MSFT','STOCK','ETF','OIL','SILVER','GOLD','XAU','XAG','XAUT','PAXG','KAU','TRY','EUR','GBP','JPY','AUD','CAD','CHF','NZD','USDC','BUSD','FDUSD','TUSD','DAI','USDE','USDP','GUSD','PYUSD','EURI','EURC','XLU','XLP','XLE','XLF','XLB','XLI','XLY','XLK','XLV'}
+BLOCK_STOCKS = {'TLT','TLH','IEF','SHY','INDA','EWJ','EWA','EWZ','KWEB','QQQ','SPY','DIA','IWM','EWW','EWC','MCHI','INDY','STRC','OURA','SPX','SPX500','NAS100','DJI','US30','UK100','GER40','RKLB','NVDA','AAPL','TSLA','MSFT','STOCK','ETF','OIL','SILVER','GOLD','XAU','XAG','XAUT','PAXG','KAU','TRY','EUR','GBP','JPY','AUD','CAD','CHF','NZD','USDC','BUSD','FDUSD','TUSD','DAI','USDE','USDP','GUSD','PYUSD','EURI','EURC','XLU','XLP','XLE','XLF','XLB','XLI','XLY','XLK','XLV','GLD','SLV','GDX','GDXJ','COPX','LIT','URA'}
 
 BLOCK_MEGA = {'BTC','ETH','SOL','BNB','TRX','XRP','ADA','DOGE','AVAX','DOT','LINK','LTC','BCH','XLM','ETC','HBAR','APT','NEAR','UNI','FIL','ARB','OP','ATOM','MATIC','POL','TON','SHIB','PEPE','CRO','LEO','OKB','BGB','SUI','LDO','RNDR','TAO','FET','WIF','ENA','JUP','SEI','TIA','ONDO','W','PYTH','STRK','JTO','ENS'}
 
-BLOCK_ALL = BLOCK_STOCKS | BLOCK_MEGA
+BLOCK_COMMODITY = {'LEAD','COPPER','NICKEL','ZINC','TIN','ALUM','ALUMINIUM','ALUMINUM','CORN','SOY','WHEAT','COTTON','SUGAR','COFFEE','COCOA','GAS'}
+
+BLOCK_ALL = BLOCK_STOCKS | BLOCK_MEGA | BLOCK_COMMODITY
 
 def send_text(msg):
     try:
@@ -32,7 +34,7 @@ def is_valid_crypto(sym):
     base = sym.split('/')[0].upper()
     if 'STOCK' in base: return False
     if base in BLOCK_ALL: return False
-    if any(x in base for x in ['XAU','PAXG','GOLD','XAG']): return False
+    if any(x in base for x in ['XAU','PAXG','GOLD','XAG','LEAD','COPPER','NICKEL','ZINC','TIN','GLD','SLV','ALUM']): return False
     if len(base) < 2 or len(base) > 6: return False
     if any(c.isdigit() for c in base): return False
     if not base.isalpha(): return False
@@ -116,7 +118,8 @@ def load_memory():
             for k,v in data.items():
                 b = v.get('base',k).upper()
                 if datetime.fromisoformat(v['first_seen']) > cutoff and b not in BLOCK_ALL and 'STOCK' not in b:
-                    cleaned[b]=v
+                    if 'LEAD' not in b and 'GLD' not in b:
+                        cleaned[b]=v
             return cleaned
         except: pass
     return {}
@@ -125,7 +128,7 @@ def save_memory(mem):
     try: open(MEMORY_FILE,'w').write(json.dumps(mem, indent=2))
     except: pass
 
-send_text(f"🚀 <b>FINAL FIXED - NO STOCK NO MEGA {datetime.utcnow().strftime('%H:%M UTC')}</b>")
+send_text(f"🚀 <b>FINAL FIXED V3 - NO LEAD GLD STOCK {datetime.utcnow().strftime('%H:%M UTC')}</b>")
 
 EXS = [
     ('BINANCE', ccxt.binanceusdm, {'enableRateLimit': True}),
@@ -138,7 +141,7 @@ EXS = [
 ]
 
 memory = load_memory()
-send_text(f"🧠 Memory: {len(memory)} coins (stock cleaned)")
+send_text(f"🧠 Memory: {len(memory)} coins cleaned")
 seen_bases = set(memory.keys())
 new_today = 0; breakouts = 0; scanned = 0
 
@@ -146,7 +149,7 @@ for exn, cls, opts in EXS:
     try:
         ex = cls(opts); ex.load_markets()
         syms = [s for s in ex.markets if is_valid_crypto(s)]
-        send_text(f"📊 {exn}: {len(syms)} USDT PERP (stocks removed)")
+        send_text(f"📊 {exn}: {len(syms)} USDT PERP")
         for sym in syms:
             base = sym.split('/')[0].upper()
             if base in memory:
@@ -183,4 +186,4 @@ for exn, cls, opts in EXS:
         continue
 
 save_memory(memory)
-send_text(f"✅ <b>DONE FIXED</b> Scanned {scanned} New {new_today} Breakouts {breakouts}\n🧠 Total {len(memory)} small crypto only - No LINSTOCK DISSTOCK XLU")
+send_text(f"✅ <b>DONE V3</b> Scanned {scanned} New {new_today} Breakouts {breakouts}\n🧠 Total {len(memory)} small crypto only")
