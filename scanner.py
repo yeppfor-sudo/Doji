@@ -1,27 +1,69 @@
 import requests
 import pandas as pd
 from datetime import datetime, timezone
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from ema20_filter import check_1d_ema20, send_daily_report
 
-PAIRS = [
-    "BTCUSDT","ETHUSDT","SOLUSDT","BNBUSDT","XRPUSDT",
-    "DOGEUSDT","ADAUSDT","AVAXUSDT","LINKUSDT","SUIUSDT",
-]
-
-def fetch_closed_candles(pair, limit=120):
-    url = "https://api.mexc.com/api/v3/klines"
-    r = requests.get(url, params={"symbol": pair, "interval": "1d", "limit": limit}, timeout=20)
+# --- Fetch ALL MEXC Perpetual symbols ---
+def get_all_perp_symbols():
+    url = "https://contract.mexc.com/api/v1/contract/detail"
+    r = requests.get(url, timeout=30)
     r.raise_for_status()
-    data = r.json()
-    if isinstance(data, dict):
-        raise ValueError(f"MEXC error: {data}")
-    df = pd.DataFrame(data)
-    df = df.iloc[:, :6]
-    df.columns = ["time", "open", "high", "low", "close", "vol"]
-    df["time"] = pd.to_datetime(df["time"], unit="ms")
+    data = r.json().get("data", [])
+    symbols = []
+    for c in data:
+        sym = c.get("symbol", "")
+        # Only USDT perpetual, active, not test
+        if not sym.endswith("USDT"):
+            continue
+        if c.get("state") not in (0, None) and c.get("state") != 1:
+            # state 1 = active on MEXC, keep if unknown too
+            pass
+        # Skip leveraged tokens / weird
+        if any(x in sym for x in ["_3L", "_3S", "_5L", "_5S", "UP", "DOWN"]):
+            continue
+        symbols.append(sym)
+    # Remove duplicates, sort
+    symbols = sorted(list(set(symbols)))
+    print(f"Found {len(symbols)} perpetuals")
+    return symbols
+
+def fetch_perp_candles(symbol, limit=120):
+    # MEXC Futures kline: https://contract.mexc.com/api/v1/contract/kline/BTC_USDT?interval=Day1
+    # Symbol format for futures is BTC_USDT, not BTCUSDT
+    fut_sym = symbol[:-4] + "_USDT" if symbol.endswith("USDT") else symbol
+    url = f"https://contract.mexc.com/api/v1/contract/kline/{fut_sym}"
+    r = requests.get(url, params={"interval": "Day1"}, timeout=20)
+    r.raise_for_status()
+    j = r.json()
+    data = j.get("data")
+    if not data:
+        raise ValueError(f"No kline data: {j}")
+
+    # Format 1: dict of lists {time:[], open:[], high:[], low:[], close:[], vol:[]}
+    if isinstance(data, dict) and "time" in data:
+        df = pd.DataFrame({
+            "time": data["time"],
+            "open": data["open"],
+            "high": data["high"],
+            "low": data["low"],
+            "close": data["close"],
+            "vol": data.get("vol", [0]*len(data["time"])),
+        })
+    # Format 2: list of lists [time, open, high, low, close, vol, ...]
+    elif isinstance(data, list):
+        df = pd.DataFrame(data)
+        df = df.iloc[:, :6]
+        df.columns = ["time", "open", "high", "low", "close", "vol"]
+    else:
+        raise ValueError(f"Unknown kline format: {type(data)}")
+
+    df["time"] = pd.to_datetime(df["time"], unit="ms", errors="coerce")
     for c in ["open", "high", "low", "close"]:
         df[c] = pd.to_numeric(df[c], errors="coerce")
     df = df.dropna(subset=["open", "high", "low", "close"])
+    df = df.sort_values("time").reset_index(drop=True)
+    # Drop still-forming candle
     return df.iloc[:-1].reset_index(drop=True)
 
 def detect_breakout_retest(df):
@@ -38,26 +80,36 @@ def detect_breakout_retest(df):
         return {"level": float(level_low), "direction": "short"}
     return None
 
+def scan_one(symbol):
+    try:
+        df = fetch_perp_candles(symbol)
+        cand = detect_breakout_retest(df)
+        if not cand:
+            return None
+        hit = check_1d_ema20(df, cand["level"], cand["direction"])
+        if hit:
+            print(f"{symbol}: PASS {hit['direction']} close {hit['close']:.6g}")
+            return {"pair": symbol, "df": df, **hit}
+        else:
+            print(f"{symbol}: breakout but EMA20 filter failed")
+            return None
+    except Exception as e:
+        print(f"{symbol}: ERROR {e}")
+        return None
+
 def main():
+    symbols = get_all_perp_symbols()
     results = []
-    for pair in PAIRS:
-        try:
-            df = fetch_closed_candles(pair)
-            cand = detect_breakout_retest(df)
-            if not cand:
-                print(f"{pair}: no breakout")
-                continue
-            hit = check_1d_ema20(df, cand["level"], cand["direction"])
-            if hit:
-                print(f"{pair}: PASS {hit}")
-                results.append({"pair": pair, "df": df, **hit})
-            else:
-                print(f"{pair}: breakout but EMA20 filter failed")
-        except Exception as e:
-            print(f"{pair}: ERROR {e}")
+    # 15 threads = ~300 pairs in 2-3 mins, inside 20 min timeout
+    with ThreadPoolExecutor(max_workers=15) as ex:
+        futures = {ex.submit(scan_one, s): s for s in symbols}
+        for f in as_completed(futures):
+            res = f.result()
+            if res:
+                results.append(res)
+    print(f"Done. Scanned {len(symbols)}, {len(results)} passed.")
     today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
     send_daily_report(results, today)
-    print(f"Done. {len(results)} passed.")
 
 if __name__ == "__main__":
     main()
