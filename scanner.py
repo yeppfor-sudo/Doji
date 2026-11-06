@@ -3,39 +3,36 @@ import pandas as pd
 from datetime import datetime, timezone
 from ema20_filter import check_1d_ema20, send_daily_report
 
-# Add / remove pairs here
 PAIRS = [
     "BTCUSDT","ETHUSDT","SOLUSDT","BNBUSDT","XRPUSDT",
-    "DOGEUSDT","ADAUSDT","AVAXUSDT","LINKUSDT","TONUSDT",
+    "DOGEUSDT","ADAUSDT","AVAXUSDT","LINKUSDT","SUIUSDT",
 ]
 
 def fetch_closed_candles(pair, limit=120):
-    # MEXC Spot klines - public, no key
     url = "https://api.mexc.com/api/v3/klines"
     r = requests.get(url, params={"symbol": pair, "interval": "1d", "limit": limit}, timeout=20)
     r.raise_for_status()
     data = r.json()
-    # MEXC returns: [openTime, open, high, low, close, volume, closeTime, ...]
-    df = pd.DataFrame(data, columns=["time","open","high","low","close","vol","closeTime","qv","n","tb","tq","ig"])
+    if isinstance(data, dict):
+        raise ValueError(f"MEXC error: {data}")
+    df = pd.DataFrame(data)
+    df = df.iloc[:, :6]
+    df.columns = ["time", "open", "high", "low", "close", "vol"]
     df["time"] = pd.to_datetime(df["time"], unit="ms")
-    for c in ["open","high","low","close"]:
+    for c in ["open", "high", "low", "close"]:
         df[c] = pd.to_numeric(df[c], errors="coerce")
-    df = df.dropna(subset=["open","high","low","close"])
-    # Drop still-forming candle (last one)
+    df = df.dropna(subset=["open", "high", "low", "close"])
     return df.iloc[:-1].reset_index(drop=True)
 
 def detect_breakout_retest(df):
-    # Last candle = retest candle. Lookback = 20 bars before it
     if len(df) < 30:
         return None
-    look = df.iloc[-21:-1]  # 20 bars before retest
+    look = df.iloc[-21:-1]
     retest = df.iloc[-1]
     prev = df.iloc[-2]
-    # LONG: breakout above 20-bar high, then retest held
     level_high = look["high"].max()
     if prev["close"] > level_high and retest["low"] <= level_high * 1.003 and retest["close"] > level_high:
         return {"level": float(level_high), "direction": "long"}
-    # SHORT: breakout below 20-bar low, then retest held
     level_low = look["low"].min()
     if prev["close"] < level_low and retest["high"] >= level_low * 0.997 and retest["close"] < level_low:
         return {"level": float(level_low), "direction": "short"}
