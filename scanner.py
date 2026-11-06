@@ -1,10 +1,15 @@
 import requests
 import pandas as pd
+import time
+import random
 from datetime import datetime, timezone
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from ema20_filter import check_1d_ema20, send_daily_report
 
-# --- Fetch ALL MEXC Perpetual symbols ---
+# MEXC futures is strict: 3 workers max, or it bans you with code 510
+MAX_WORKERS = 3
+MAX_RETRIES = 5
+
 def get_all_perp_symbols():
     url = "https://contract.mexc.com/api/v1/contract/detail"
     r = requests.get(url, timeout=30)
@@ -13,58 +18,68 @@ def get_all_perp_symbols():
     symbols = []
     for c in data:
         sym = c.get("symbol", "")
-        # Only USDT perpetual, active, not test
         if not sym.endswith("USDT"):
             continue
-        if c.get("state") not in (0, None) and c.get("state") != 1:
-            # state 1 = active on MEXC, keep if unknown too
-            pass
-        # Skip leveraged tokens / weird
-        if any(x in sym for x in ["_3L", "_3S", "_5L", "_5S", "UP", "DOWN"]):
+        # Skip stock / index perpetuals - they spam errors
+        if "STOCK" in sym or "INDEX" in sym:
+            continue
+        if any(x in sym for x in ["_3L", "_3S", "_5L", "_5S"]):
             continue
         symbols.append(sym)
-    # Remove duplicates, sort
     symbols = sorted(list(set(symbols)))
     print(f"Found {len(symbols)} perpetuals")
     return symbols
 
-def fetch_perp_candles(symbol, limit=120):
-    # MEXC Futures kline: https://contract.mexc.com/api/v1/contract/kline/BTC_USDT?interval=Day1
-    # Symbol format for futures is BTC_USDT, not BTCUSDT
+def fetch_perp_candles(symbol):
     fut_sym = symbol[:-4] + "_USDT" if symbol.endswith("USDT") else symbol
     url = f"https://contract.mexc.com/api/v1/contract/kline/{fut_sym}"
-    r = requests.get(url, params={"interval": "Day1"}, timeout=20)
-    r.raise_for_status()
-    j = r.json()
-    data = j.get("data")
-    if not data:
-        raise ValueError(f"No kline data: {j}")
 
-    # Format 1: dict of lists {time:[], open:[], high:[], low:[], close:[], vol:[]}
-    if isinstance(data, dict) and "time" in data:
-        df = pd.DataFrame({
-            "time": data["time"],
-            "open": data["open"],
-            "high": data["high"],
-            "low": data["low"],
-            "close": data["close"],
-            "vol": data.get("vol", [0]*len(data["time"])),
-        })
-    # Format 2: list of lists [time, open, high, low, close, vol, ...]
-    elif isinstance(data, list):
-        df = pd.DataFrame(data)
-        df = df.iloc[:, :6]
-        df.columns = ["time", "open", "high", "low", "close", "vol"]
-    else:
-        raise ValueError(f"Unknown kline format: {type(data)}")
-
-    df["time"] = pd.to_datetime(df["time"], unit="ms", errors="coerce")
-    for c in ["open", "high", "low", "close"]:
-        df[c] = pd.to_numeric(df[c], errors="coerce")
-    df = df.dropna(subset=["open", "high", "low", "close"])
-    df = df.sort_values("time").reset_index(drop=True)
-    # Drop still-forming candle
-    return df.iloc[:-1].reset_index(drop=True)
+    # Retry with exponential backoff on rate limit 510
+    last_err = None
+    for attempt in range(MAX_RETRIES):
+        try:
+            r = requests.get(url, params={"interval": "Day1"}, timeout=20)
+            r.raise_for_status()
+            j = r.json()
+            # Rate limited - wait and retry
+            if j.get("code") == 510 or j.get("success") is False and "rate limit" in str(j.get("message", "")).lower():
+                wait = (2 ** attempt) + random.uniform(0, 1)
+                print(f"{symbol}: rate limited, retry {attempt+1} in {wait:.1f}s")
+                time.sleep(wait)
+                continue
+            data = j.get("data")
+            if not data:
+                raise ValueError(f"No kline data: {j}")
+            # Parse
+            if isinstance(data, dict) and "time" in data:
+                df = pd.DataFrame({
+                    "time": data["time"],
+                    "open": data["open"],
+                    "high": data["high"],
+                    "low": data["low"],
+                    "close": data["close"],
+                    "vol": data.get("vol", [0]*len(data["time"])),
+                })
+            elif isinstance(data, list):
+                df = pd.DataFrame(data)
+                df = df.iloc[:, :6]
+                df.columns = ["time", "open", "high", "low", "close", "vol"]
+            else:
+                raise ValueError(f"Unknown kline format: {type(data)}")
+            df["time"] = pd.to_datetime(df["time"], unit="ms", errors="coerce")
+            for c in ["open", "high", "low", "close"]:
+                df[c] = pd.to_numeric(df[c], errors="coerce")
+            df = df.dropna(subset=["open", "high", "low", "close"])
+            df = df.sort_values("time").reset_index(drop=True)
+            return df.iloc[:-1].reset_index(drop=True)
+        except Exception as e:
+            last_err = e
+            if "rate limit" in str(e).lower() or "510" in str(e):
+                wait = (2 ** attempt) + random.uniform(0, 1)
+                time.sleep(wait)
+                continue
+            raise
+    raise last_err
 
 def detect_breakout_retest(df):
     if len(df) < 30:
@@ -82,6 +97,8 @@ def detect_breakout_retest(df):
 
 def scan_one(symbol):
     try:
+        # Small random delay so all threads don't hit at same ms
+        time.sleep(random.uniform(0.1, 0.4))
         df = fetch_perp_candles(symbol)
         cand = detect_breakout_retest(df)
         if not cand:
@@ -90,9 +107,7 @@ def scan_one(symbol):
         if hit:
             print(f"{symbol}: PASS {hit['direction']} close {hit['close']:.6g}")
             return {"pair": symbol, "df": df, **hit}
-        else:
-            print(f"{symbol}: breakout but EMA20 filter failed")
-            return None
+        return None
     except Exception as e:
         print(f"{symbol}: ERROR {e}")
         return None
@@ -100,8 +115,7 @@ def scan_one(symbol):
 def main():
     symbols = get_all_perp_symbols()
     results = []
-    # 15 threads = ~300 pairs in 2-3 mins, inside 20 min timeout
-    with ThreadPoolExecutor(max_workers=15) as ex:
+    with ThreadPoolExecutor(max_workers=MAX_WORKERS) as ex:
         futures = {ex.submit(scan_one, s): s for s in symbols}
         for f in as_completed(futures):
             res = f.result()
