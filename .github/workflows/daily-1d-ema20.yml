@@ -2,7 +2,7 @@ name: Daily 1D EMA20 breakout-retest
 
 on:
   schedule:
-    - cron: "10 0 * * *"   # 00:10 UTC, adjust to just after MEXC 1d close
+    - cron: "10 0 * * *" # 00:10 UTC, just after MEXC 1d close
   workflow_dispatch:
 
 concurrency:
@@ -10,7 +10,7 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  SCRIPT: scanner.py   # <- change to your scanner's real filename
+  SCRIPT: scanner.py
 
 jobs:
   scan:
@@ -26,13 +26,12 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install pandas requests matplotlib
-          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+          pip install -r requirements.txt
 
       - name: Check script exists
         run: |
           if [ ! -f "$SCRIPT" ]; then
-            echo "::error::$SCRIPT not found. Python files in repo:"
+            echo "::error::$SCRIPT not found"
             ls -1 *.py || true
             exit 1
           fi
