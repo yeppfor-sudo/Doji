@@ -1,0 +1,39 @@
+name: Daily 1D EMA20 breakout-retest
+
+on:
+  schedule:
+    - cron: "10 0 * * *"   # 00:10 UTC, adjust to just after MEXC 1d close
+  workflow_dispatch:
+
+concurrency:
+  group: daily-1d-ema20
+  cancel-in-progress: false
+
+jobs:
+  scan:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - run: pip install -r requirements.txt
+
+      - name: Run 1D scan
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: python scanner.py --timeframe 1d
+
+      - name: Save charts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: charts
+          path: charts/
+          if-no-files-found: ignore
+          retention-days: 3
