@@ -145,9 +145,16 @@ def build_daily_summary(results: list, date_str: str) -> str:
     return "\n".join(parts)
 
 
+def _tg_creds():
+    token = os.environ.get("BOT_TOKEN") or os.environ.get("TELEGRAM_BOT_TOKEN")
+    chat_id = os.environ.get("CHAT_ID") or os.environ.get("TELEGRAM_CHAT_ID")
+    if not token or not chat_id:
+        raise RuntimeError("Missing BOT_TOKEN / CHAT_ID environment variables")
+    return token, chat_id
+
+
 def send_telegram_message(text: str):
-    token = os.environ["TELEGRAM_BOT_TOKEN"]
-    chat_id = os.environ["TELEGRAM_CHAT_ID"]
+    token, chat_id = _tg_creds()
     # Telegram limit is 4096 chars per message: split if needed
     for i in range(0, len(text), 4000):
         r = requests.post(
@@ -156,7 +163,6 @@ def send_telegram_message(text: str):
             timeout=20,
         )
         r.raise_for_status()
-
 
 
 def render_chart(df: pd.DataFrame, pair: str, hit: dict, path: str, n_bars: int = 70) -> str:
@@ -211,50 +217,7 @@ def render_chart(df: pd.DataFrame, pair: str, hit: dict, path: str, n_bars: int 
 
 
 def send_telegram_photo(path: str, caption: str = ""):
-    token = os.environ["TELEGRAM_BOT_TOKEN"]
-    chat_id = os.environ["TELEGRAM_CHAT_ID"]
+    token, chat_id = _tg_creds()
     with open(path, "rb") as f:
         r = requests.post(
             f"https://api.telegram.org/bot{token}/sendPhoto",
-            data={"chat_id": chat_id, "caption": caption[:1000]},
-            files={"photo": f},
-            timeout=40,
-        )
-    r.raise_for_status()
-
-
-def send_daily_report(results: list, date_str: str, max_charts: int = 10, out_dir: str = "charts"):
-    """
-    Sends the one-message summary, then one chart photo per passing pair
-    (each result must include 'pair', 'df' and the check_1d_ema20 fields).
-    """
-    send_telegram_message(build_daily_summary(results, date_str))
-    os.makedirs(out_dir, exist_ok=True)
-    for r in results[:max_charts]:
-        path = os.path.join(out_dir, f"{r['pair']}_1d.png")
-        render_chart(r["df"], r["pair"], r, path)
-        cap = (
-            f"{r['pair']} {r['direction'].upper()}\n"
-            f"close {r['close']:.6g} | level {r['level']:.6g} | "
-            f"EMA20 {r['ema20']:.6g} | SL {r['sl']:.6g}"
-        )
-        send_telegram_photo(path, cap)
-
-
-# ---------------------------------------------------------------------------
-# How to wire it into your scanner (1d only):
-#
-#   results = []
-#   for pair in pairs:
-#       df = fetch_closed_candles(pair, "1d")        # your existing function
-#       cand = your_wedge_breakout_retest(df)        # your existing detection
-#       if not cand:
-#           continue
-#       hit = check_1d_ema20(df, cand["level"], cand["direction"])
-#       if hit:
-#           results.append({"pair": pair, "df": df, **hit})
-#
-#   send_daily_report(results, today_str)
-#
-# requirements: pandas, requests, matplotlib
-# ---------------------------------------------------------------------------
