@@ -1,84 +1,53 @@
 """
 ema20_filter.py - EMA20 confirmation filter + daily Telegram summary
 for a 1d breakout-retest scanner.
-
-Drop this file next to your scanner and call it AFTER your wedge/breakout
-detection has produced a candidate (pair, direction, broken level).
-
-Input candles: pandas DataFrame, oldest -> newest, columns:
-    open, high, low, close   (volume optional)
-Pass CLOSED candles only (drop the still-forming candle first).
 """
-
 import os
 import requests
 import pandas as pd
 import matplotlib
-
-matplotlib.use("Agg")  # headless (GitHub Actions)
+matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 from matplotlib.patches import Rectangle
 
 EMA_LEN = 20
 ATR_LEN = 14
 
-
 def ema(series: pd.Series, length: int = EMA_LEN) -> pd.Series:
     return series.ewm(span=length, adjust=False).mean()
 
-
 def atr(df: pd.DataFrame, length: int = ATR_LEN) -> pd.Series:
     prev_close = df["close"].shift(1)
-    tr = pd.concat(
-        [
-            df["high"] - df["low"],
-            (df["high"] - prev_close).abs(),
-            (df["low"] - prev_close).abs(),
-        ],
-        axis=1,
-    ).max(axis=1)
+    tr = pd.concat([
+        df["high"] - df["low"],
+        (df["high"] - prev_close).abs(),
+        (df["low"] - prev_close).abs(),
+    ], axis=1).max(axis=1)
     return tr.ewm(alpha=1 / length, adjust=False).mean()
 
-
-def check_1d_ema20(
-    df: pd.DataFrame,
-    level: float,
-    direction: str,            # "long" or "short"
-    breakout_lookback: int = 10,
-    zone_tol: float = 0.003,   # 0.3% tolerance for "touching" the zone
-    max_ext_atr: float = 2.0,  # skip if close is too far from EMA20
-    slope_bars: int = 3,
-    sl_buffer_atr: float = 0.25,
-):
-    """
-    Returns a dict with entry/SL info if the setup passes, else None.
-    The last row of df is the retest candle (previous closed candle).
-    """
-    if len(df) < max(EMA_LEN, ATR_LEN) + breakout_lookback + 2:
+def check_1d_ema20(df, level, direction, breakout_lookback=10, zone_tol=0.003, max_ext_atr=2.0, slope_bars=3, sl_buffer_atr=0.25):
+    if df is None or len(df) < max(EMA_LEN, ATR_LEN) + breakout_lookback + 2:
         return None
-
     d = df.copy()
+    for c in ["open","high","low","close"]:
+        d[c] = pd.to_numeric(d[c], errors="coerce")
+    d = d.dropna(subset=["open","high","low","close"])
+    if len(d) < 30:
+        return None
     d["ema20"] = ema(d["close"])
     d["atr"] = atr(d)
-
     last = d.iloc[-1]
     a = last["atr"]
     e = last["ema20"]
     if pd.isna(a) or pd.isna(e) or a <= 0:
         return None
-
-    # EMA20 slope: flat or with the trade direction
     slope = e - d["ema20"].iloc[-1 - slope_bars]
-    # Extension filter: skip entries far from EMA20
     if abs(last["close"] - e) > max_ext_atr * a:
         return None
-
-    window = d.iloc[-(breakout_lookback + 1):-1]  # candles before retest
-
+    window = d.iloc[-(breakout_lookback + 1):-1]
     if direction == "long":
         if slope < 0:
             return None
-        # breakout candle: closed above level AND above its EMA20
         bo = window[(window["close"] > level) & (window["close"] > window["ema20"])]
         if bo.empty:
             return None
@@ -88,15 +57,7 @@ def check_1d_ema20(
         if not (touched and held):
             return None
         sl = min(last["low"], e) - sl_buffer_atr * a
-        return {
-            "direction": "long",
-            "level": level,
-            "ema20": float(e),
-            "close": float(last["close"]),
-            "sl": float(sl),
-            "atr": float(a),
-        }
-
+        return {"direction":"long","level":float(level),"ema20":float(e),"close":float(last["close"]),"sl":float(sl),"atr":float(a)}
     if direction == "short":
         if slope > 0:
             return None
@@ -109,41 +70,24 @@ def check_1d_ema20(
         if not (touched and held):
             return None
         sl = max(last["high"], e) + sl_buffer_atr * a
-        return {
-            "direction": "short",
-            "level": level,
-            "ema20": float(e),
-            "close": float(last["close"]),
-            "sl": float(sl),
-            "atr": float(a),
-        }
-
+        return {"direction":"short","level":float(level),"ema20":float(e),"close":float(last["close"]),"sl":float(sl),"atr":float(a)}
     return None
 
-
-def build_daily_summary(results: list, date_str: str) -> str:
-    """results: list of dicts, each with 'pair' plus the check_1d_ema20 fields."""
+def build_daily_summary(results, date_str):
     if not results:
         return f"1D breakout-retest (EMA20 confirmed) - {date_str}\nNo pairs passed today."
-
-    longs = [r for r in results if r["direction"] == "long"]
-    shorts = [r for r in results if r["direction"] == "short"]
-
+    longs = [r for r in results if r["direction"]=="long"]
+    shorts = [r for r in results if r["direction"]=="short"]
     def line(r):
-        return (
-            f"{r['pair']}  close {r['close']:.6g}  level {r['level']:.6g}  "
-            f"EMA20 {r['ema20']:.6g}  SL {r['sl']:.6g}"
-        )
-
+        return f"{r['pair']}  close {r['close']:.6g}  level {r['level']:.6g}  EMA20 {r['ema20']:.6g}  SL {r['sl']:.6g}"
     parts = [f"1D breakout-retest (EMA20 confirmed) - {date_str}"]
     if longs:
-        parts.append("\nLONG (" + str(len(longs)) + ")")
+        parts.append(f"\nLONG ({len(longs)})")
         parts += [line(r) for r in longs]
     if shorts:
-        parts.append("\nSHORT (" + str(len(shorts)) + ")")
+        parts.append(f"\nSHORT ({len(shorts)})")
         parts += [line(r) for r in shorts]
     return "\n".join(parts)
-
 
 def _tg_creds():
     token = os.environ.get("BOT_TOKEN") or os.environ.get("TELEGRAM_BOT_TOKEN")
@@ -152,54 +96,40 @@ def _tg_creds():
         raise RuntimeError("Missing BOT_TOKEN / CHAT_ID environment variables")
     return token, chat_id
 
-
 def send_telegram_message(text: str):
     token, chat_id = _tg_creds()
-    # Telegram limit is 4096 chars per message: split if needed
     for i in range(0, len(text), 4000):
-        r = requests.post(
-            f"https://api.telegram.org/bot{token}/sendMessage",
-            data={"chat_id": chat_id, "text": text[i:i + 4000]},
-            timeout=20,
-        )
+        r = requests.post(f"https://api.telegram.org/bot{token}/sendMessage", data={"chat_id": chat_id, "text": text[i:i+4000]}, timeout=20)
         r.raise_for_status()
 
-
-def render_chart(df: pd.DataFrame, pair: str, hit: dict, path: str, n_bars: int = 70) -> str:
-    """
-    Render a 1d candlestick chart (built from the same candles the scanner
-    just fetched) with EMA20, the broken level, the retest candle and the SL.
-    """
+def render_chart(df, pair, hit, path, n_bars=70):
     d = df.copy()
+    for c in ["open","high","low","close"]:
+        d[c] = pd.to_numeric(d[c], errors="coerce")
     d["ema20"] = ema(d["close"])
     d = d.iloc[-n_bars:].reset_index(drop=True)
-    if "time" in df.columns:
-        labels = pd.to_datetime(df["time"].iloc[-n_bars:]).dt.strftime("%m-%d").tolist()
+    if "time" in d.columns:
+        try:
+            labels = pd.to_datetime(d["time"]).dt.strftime("%m-%d").tolist()
+        except Exception:
+            labels = [str(x) for x in range(len(d))]
     else:
         labels = [str(x) for x in range(len(d))]
-
     up, down = "#26a69a", "#ef5350"
     fig, ax = plt.subplots(figsize=(10, 5.6), dpi=130)
     fig.patch.set_facecolor("#131722")
     ax.set_facecolor("#131722")
-
     for x, r in d.iterrows():
         color = up if r["close"] >= r["open"] else down
         ax.plot([x, x], [r["low"], r["high"]], color=color, linewidth=1)
         lo, hi = sorted([r["open"], r["close"]])
         ax.add_patch(Rectangle((x - 0.35, lo), 0.7, max(hi - lo, 1e-12), color=color))
-
     ax.plot(d.index, d["ema20"], color="#f5a623", linewidth=1.5, label="EMA20")
     ax.axhline(hit["level"], color="#4fc3f7", linestyle="--", linewidth=1.2, label="Broken level")
     ax.axhline(hit["sl"], color="#ef5350", linestyle=":", linewidth=1.2, label="SL")
-
     last_x = len(d) - 1
-    ax.axvspan(last_x - 0.5, last_x + 0.5, color="#ffffff", alpha=0.08)  # retest candle
-
-    ax.set_title(
-        f"{pair}  1D  {hit['direction'].upper()} retest  (EMA20 confirmed)",
-        color="white", fontsize=12,
-    )
+    ax.axvspan(last_x - 0.5, last_x + 0.5, color="#ffffff", alpha=0.08)
+    ax.set_title(f"{pair}  1D  {hit['direction'].upper()} retest  (EMA20 confirmed)", color="white", fontsize=12)
     step = max(len(d) // 8, 1)
     ax.set_xticks(range(0, len(d), step))
     ax.set_xticklabels(labels[::step], color="#b2b5be", fontsize=8)
@@ -215,9 +145,17 @@ def render_chart(df: pd.DataFrame, pair: str, hit: dict, path: str, n_bars: int 
     plt.close(fig)
     return path
 
-
-def send_telegram_photo(path: str, caption: str = ""):
+def send_telegram_photo(path, caption=""):
     token, chat_id = _tg_creds()
     with open(path, "rb") as f:
-        r = requests.post(
-            f"https://api.telegram.org/bot{token}/sendPhoto",
+        r = requests.post(f"https://api.telegram.org/bot{token}/sendPhoto", data={"chat_id": chat_id, "caption": caption[:1000]}, files={"photo": f}, timeout=40)
+    r.raise_for_status()
+
+def send_daily_report(results, date_str, max_charts=10, out_dir="charts"):
+    send_telegram_message(build_daily_summary(results, date_str))
+    os.makedirs(out_dir, exist_ok=True)
+    for r in results[:max_charts]:
+        path = os.path.join(out_dir, f"{r['pair']}_1d.png")
+        render_chart(r["df"], r["pair"], r, path)
+        cap = f"{r['pair']} {r['direction'].upper()}\nclose {r['close']:.6g} | level {r['level']:.6g} | EMA20 {r['ema20']:.6g} | SL {r['sl']:.6g}"
+        send_telegram_photo(path, cap)
