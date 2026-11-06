@@ -9,6 +9,9 @@ concurrency:
   group: daily-1d-ema20
   cancel-in-progress: false
 
+env:
+  SCRIPT: scanner.py   # <- change to your scanner's real filename
+
 jobs:
   scan:
     runs-on: ubuntu-latest
@@ -19,17 +22,28 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.11"
-          cache: "pip"
 
-      - run: pip install -r requirements.txt
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install pandas requests matplotlib
+          if [ -f requirements.txt ]; then pip install -r requirements.txt; fi
+
+      - name: Check script exists
+        run: |
+          if [ ! -f "$SCRIPT" ]; then
+            echo "::error::$SCRIPT not found. Python files in repo:"
+            ls -1 *.py || true
+            exit 1
+          fi
 
       - name: Run 1D scan
         env:
-          TELEGRAM_BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
-          TELEGRAM_CHAT_ID: ${{ secrets.CHAT_ID }}
           BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
           CHAT_ID: ${{ secrets.CHAT_ID }}
-        run: python scanner.py --timeframe 1d
+          TELEGRAM_BOT_TOKEN: ${{ secrets.BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.CHAT_ID }}
+        run: python "$SCRIPT"
 
       - name: Save charts
         if: always()
