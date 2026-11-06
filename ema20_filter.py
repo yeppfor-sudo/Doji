@@ -1,7 +1,3 @@
-"""
-ema20_filter.py - EMA20 confirmation filter + daily Telegram summary
-for a 1d breakout-retest scanner.
-"""
 import os
 import requests
 import pandas as pd
@@ -152,6 +148,10 @@ def send_telegram_photo(path, caption=""):
     r.raise_for_status()
 
 def send_daily_report(results, date_str, max_charts=10, out_dir="charts"):
+    # FIX: Silent when 0 pass - no more "No pairs passed" spam
+    if not results:
+        print(f"{date_str}: 0 passed - Telegram skipped (silent)")
+        return
     send_telegram_message(build_daily_summary(results, date_str))
     os.makedirs(out_dir, exist_ok=True)
     for r in results[:max_charts]:
