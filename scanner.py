@@ -6,43 +6,44 @@ from datetime import datetime, timezone
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from ema20_filter import check_1d_ema20, send_daily_report
 
-# MEXC futures is strict: 3 workers max, or it bans you with code 510
 MAX_WORKERS = 3
 MAX_RETRIES = 5
 
 def get_all_perp_symbols():
-    url = "https://contract.mexc.com/api/v1/contract/detail"
+    # Use ticker = only LIVE contracts. detail = includes dead/delisted ones (caused 1001)
+    url = "https://contract.mexc.com/api/v1/contract/ticker"
     r = requests.get(url, timeout=30)
     r.raise_for_status()
     data = r.json().get("data", [])
     symbols = []
     for c in data:
-        sym = c.get("symbol", "")
+        sym = c.get("symbol", "")  # Already in BTC_USDT format - use AS-IS
         if not sym.endswith("USDT"):
             continue
-        # Skip stock / index perpetuals - they spam errors
         if "STOCK" in sym or "INDEX" in sym:
             continue
         if any(x in sym for x in ["_3L", "_3S", "_5L", "_5S"]):
             continue
         symbols.append(sym)
     symbols = sorted(list(set(symbols)))
-    print(f"Found {len(symbols)} perpetuals")
+    print(f"Found {len(symbols)} live perpetuals")
     return symbols
 
 def fetch_perp_candles(symbol):
-    fut_sym = symbol[:-4] + "_USDT" if symbol.endswith("USDT") else symbol
-    url = f"https://contract.mexc.com/api/v1/contract/kline/{fut_sym}"
-
-    # Retry with exponential backoff on rate limit 510
+    # symbol is already BTC_USDT - DO NOT transform it
+    url = f"https://contract.mexc.com/api/v1/contract/kline/{symbol}"
     last_err = None
     for attempt in range(MAX_RETRIES):
         try:
             r = requests.get(url, params={"interval": "Day1"}, timeout=20)
             r.raise_for_status()
             j = r.json()
-            # Rate limited - wait and retry
-            if j.get("code") == 510 or j.get("success") is False and "rate limit" in str(j.get("message", "")).lower():
+            code = j.get("code")
+            # 1001 = contract does not exist - dead, skip immediately, no retry
+            if code == 1001:
+                raise ValueError("dead contract, skip")
+            # 510 = rate limit - wait and retry
+            if code == 510 or "rate limit" in str(j.get("message", "")).lower():
                 wait = (2 ** attempt) + random.uniform(0, 1)
                 print(f"{symbol}: rate limited, retry {attempt+1} in {wait:.1f}s")
                 time.sleep(wait)
@@ -50,7 +51,6 @@ def fetch_perp_candles(symbol):
             data = j.get("data")
             if not data:
                 raise ValueError(f"No kline data: {j}")
-            # Parse
             if isinstance(data, dict) and "time" in data:
                 df = pd.DataFrame({
                     "time": data["time"],
@@ -72,11 +72,15 @@ def fetch_perp_candles(symbol):
             df = df.dropna(subset=["open", "high", "low", "close"])
             df = df.sort_values("time").reset_index(drop=True)
             return df.iloc[:-1].reset_index(drop=True)
+        except ValueError as e:
+            if "dead contract" in str(e):
+                raise  # skip, don't retry
+            last_err = e
+            raise
         except Exception as e:
             last_err = e
             if "rate limit" in str(e).lower() or "510" in str(e):
-                wait = (2 ** attempt) + random.uniform(0, 1)
-                time.sleep(wait)
+                time.sleep((2 ** attempt) + random.uniform(0, 1))
                 continue
             raise
     raise last_err
@@ -97,7 +101,6 @@ def detect_breakout_retest(df):
 
 def scan_one(symbol):
     try:
-        # Small random delay so all threads don't hit at same ms
         time.sleep(random.uniform(0.1, 0.4))
         df = fetch_perp_candles(symbol)
         cand = detect_breakout_retest(df)
@@ -109,7 +112,9 @@ def scan_one(symbol):
             return {"pair": symbol, "df": df, **hit}
         return None
     except Exception as e:
-        print(f"{symbol}: ERROR {e}")
+        # Don't spam log for dead contracts
+        if "dead contract" not in str(e) and "No kline data" not in str(e):
+            print(f"{symbol}: ERROR {e}")
         return None
 
 def main():
