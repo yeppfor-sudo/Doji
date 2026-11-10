@@ -29,8 +29,37 @@ SEC = {"4h":14400,"8h":28800,"12h":43200,"1d":86400,"3d":259200,"1w":604800}
 TF_WEIGHT = {"4h": 5, "8h": 6, "12h": 7, "1d": 8, "3d": 9, "1w": 10}
 GRADE_RANK = {"C": 1, "B": 2, "A": 3}
 
-BLOCK = {"XAU","XAG","GOLD","SILVER","PAXG","XAUT","TSLA","AAPL","NVDA","MSFT","AMZN",
-         "GOOGL","META","COIN","MSTR","SPY","QQQ","HOOD","CRCL","PLTR","AMD","NFLX"}
+# ---- non-crypto blocklist (stocks, ETFs, commodities, forex, indices) ----
+BLOCK = {
+    # stocks
+    "TSLA","AAPL","NVDA","MSFT","AMZN","GOOGL","GOOG","META","COIN","MSTR","HOOD",
+    "CRCL","PLTR","AMD","NFLX","INTC","BABA","UBER","PYPL","SHOP","NIO","TSM",
+    "ORCL","SMCI","AVGO","JPM","WMT","COST","PFE","MCD","NKE","XOM","RIVN",
+    "LCID","SOFI","RDDT","DJT","CVNA","BIDU","JD","PDD","ADBE","CRM","QCOM",
+    "MRVL","ASML","LLY","UNH","HD","BAC","WFC","GS","CSCO","IBM","SNAP","ABNB",
+    "MARA","RIOT","CLSK","IREN","BMNR","SBET","FIG","FIGR","GLXY","BULL","CRWV",
+    # ETFs / funds
+    "SPY","QQQ","IWM","DIA","ARKK","GLD","SLV","USO","TLT","VOO","IVV","IBIT",
+    "ETHA","FBTC","GBTC","BITO",
+    # metals / commodities
+    "XAU","XAG","GOLD","SILVER","PAXG","XAUT","XPT","XPD","PLATINUM","PALLADIUM",
+    "COPPER","XCU","OIL","USOIL","UKOIL","BRENT","WTI","NGAS","NATGAS","WHEAT",
+    "CORN","SOYBEAN","COFFEE","SUGAR","COCOA","COTTON",
+    # forex / indices
+    "EUR","GBP","JPY","AUD","CAD","CHF","NZD","CNH","DXY",
+    "SPX","SPX500","NAS100","NDX","US30","US500","US100","DAX","HSI","NIKKEI","FTSE",
+}
+NON_CRYPTO_WORDS = ("stock", "equity", "equities", "etf", "commodit", "forex",
+                    "metal", "tradfi", "traditional", "precious")
+
+def is_non_crypto(c):
+    base = str(c.get("baseCoin", "")).upper()
+    if base in BLOCK:
+        return True
+    # defensive: check any category-style fields MEXC may return
+    blob = " ".join(str(c.get(k, "")) for k in
+                    ("conceptPlate", "conceptPlateId", "conceptPlateEn")).lower()
+    return any(w in blob for w in NON_CRYPTO_WORDS)
 
 # ---------------- Telegram ----------------
 def tg_text(text):
@@ -53,11 +82,14 @@ def tg_photo(buf, caption):
 # ---------------- Data ----------------
 def get_symbols():
     r = requests.get(f"{BASE}/detail", timeout=20).json()["data"]
-    out = []
+    out, skipped = [], []
     for c in r:
         if c.get("quoteCoin") == "USDT" and c.get("state") == 0:
-            if c.get("baseCoin", "").upper() not in BLOCK:
+            if is_non_crypto(c):
+                skipped.append(c["symbol"])
+            else:
                 out.append(c["symbol"])
+    print(f"Skipped {len(skipped)} non-crypto pairs: {sorted(skipped)}")
     return out
 
 def klines(symbol, tf, n=200):
@@ -193,7 +225,7 @@ def save_sent(d):
 def main():
     sent = load_sent()
     symbols = get_symbols()
-    print(f"Scanning {len(symbols)} symbols x {len(TIMEFRAMES)} timeframes")
+    print(f"Scanning {len(symbols)} crypto symbols x {len(TIMEFRAMES)} timeframes")
     jobs = [(s, tf) for s in symbols for tf in TIMEFRAMES]
     with ThreadPoolExecutor(WORKERS) as ex:
         results = [r for r in ex.map(scan_one, jobs) if r]
