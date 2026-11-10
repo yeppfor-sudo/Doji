@@ -14,6 +14,7 @@ MAX_CHARTS    = 40
 WORKERS       = 8
 SENT_FILE     = "sent.json"
 KEEP_DAYS     = 30
+MIN_GRADE     = "A"      # send only this grade or better: "A", "B" or "C"
 # ============================================
 
 TG_TOKEN = os.environ["TELEGRAM_BOT_TOKEN"]
@@ -24,6 +25,9 @@ NATIVE = {"4h": ("Hour4", 14400), "8h": ("Hour8", 28800),
           "1d": ("Day1", 86400), "1w": ("Week1", 604800)}
 RESAMPLE = {"12h": ("4h", "12h"), "3d": ("1d", "3D")}
 SEC = {"4h":14400,"8h":28800,"12h":43200,"1d":86400,"3d":259200,"1w":604800}
+
+TF_WEIGHT = {"4h": 5, "8h": 6, "12h": 7, "1d": 8, "3d": 9, "1w": 10}
+GRADE_RANK = {"C": 1, "B": 2, "A": 3}
 
 BLOCK = {"XAU","XAG","GOLD","SILVER","PAXG","XAUT","TSLA","AAPL","NVDA","MSFT","AMZN",
          "GOOGL","META","COIN","MSTR","SPY","QQQ","HOOD","CRCL","PLTR","AMD","NFLX"}
@@ -88,6 +92,27 @@ def add_ema(df):
         df[f"E{p}"] = df["Close"].ewm(span=p, adjust=False).mean()
     return df
 
+# ---------------- Score + Grade ----------------
+def calc_score(tf, stacked, below, body_x, ext, vr, fresh):
+    # downtrend quality (max 25): 70% -> 0 pts, 100% -> 12.5 pts each
+    s = max(0.0, (stacked - MIN_DOWN_PCT) / (1 - MIN_DOWN_PCT)) * 12.5
+    s += max(0.0, (below - MIN_DOWN_PCT) / (1 - MIN_DOWN_PCT)) * 12.5
+    # trigger candle body (max 25): 1.5x -> 0 pts, 3x or more -> 25 pts
+    s += min(max((body_x - BIG_BODY_X) / (3.0 - BIG_BODY_X), 0.0), 1.0) * 25
+    # closeness to EMA20 (max 20)
+    ep = ext * 100
+    s += 20 if ep <= 3 else 12 if ep <= 6 else 5
+    # volume vs last 20 candles (max 15)
+    s += 15 if vr >= 2 else 10 if vr >= 1.5 else 5 if vr >= 1.2 else 0
+    # timeframe weight (max 10)
+    s += TF_WEIGHT.get(tf, 5)
+    # fresh cross (max 5)
+    s += 5 if fresh else 0
+    return round(s, 1)
+
+def grade(score):
+    return "A" if score >= 70 else ("B" if score >= 55 else "C")
+
 # ---------------- Pattern ----------------
 def check(df, tf):
     if df is None or len(df) < 60: return None
@@ -111,8 +136,16 @@ def check(df, tf):
     ext = c.Close / c.E20 - 1
     if ext > MAX_ABOVE_EMA: return None
 
+    vol_avg = float(closed.Volume.iloc[-21:-1].mean())
+    vr = float(c.Volume / vol_avg) if vol_avg > 0 else 0.0
+    fresh = bool(p.Close < p.E20)
+    body_x = float(body / avg_body)
+    score = calc_score(tf, float(stacked), float(below), body_x, float(ext), vr, fresh)
+
     return {"tf": tf, "close": float(c.Close), "above_EMA20_%": round(float(ext)*100, 2),
-            "body_x": round(float(body/avg_body), 2), "candle_time": closed.index[-1]}
+            "body_x": round(body_x, 2), "vol_x": round(vr, 2),
+            "score": score, "grade": grade(score),
+            "candle_time": closed.index[-1]}
 
 def scan_one(args):
     sym, tf = args
@@ -136,7 +169,8 @@ def chart_buf(r):
     st = mpf.make_mpf_style(marketcolors=mc, gridstyle=":", facecolor="white")
     buf = io.BytesIO()
     mpf.plot(df, type="candle", style=st, addplot=ap, figsize=(9, 5),
-             title=f"{r['symbol']}  {r['tf']}  (live)  +{r['above_EMA20_%']}% vs EMA20",
+             title=(f"{r['symbol']}  {r['tf']}  Grade {r['grade']} ({r['score']:.0f}/100)  "
+                    f"+{r['above_EMA20_%']}% vs EMA20"),
              savefig=dict(fname=buf, format="png", dpi=110))
     buf.seek(0)
     return buf
@@ -172,19 +206,24 @@ def main():
             r["key"] = key
             new.append(r)
 
-    print(f"Found {len(results)} setups, {len(new)} new")
+    # grade filter (default: Grade A only)
+    before = len(new)
+    new = [r for r in new if GRADE_RANK[r["grade"]] >= GRADE_RANK[MIN_GRADE]]
+    print(f"Found {len(results)} setups, {before} new, {len(new)} grade {MIN_GRADE}+")
     if not new:
         save_sent(sent)
         return
 
-    new.sort(key=lambda x: -x["body_x"])
-    lines = [f"{r['symbol']} | {r['tf']} | +{r['above_EMA20_%']}% | body {r['body_x']}x" for r in new]
-    tg_text(f"🟢 {len(new)} new setups:\n\n" + "\n".join(lines[:60]))
+    new.sort(key=lambda x: (-x["score"], -x["body_x"]))
+    lines = [f"{r['symbol']} | {r['tf']} | Grade {r['grade']} ({r['score']:.0f}) | "
+             f"+{r['above_EMA20_%']}% | body {r['body_x']}x" for r in new]
+    tg_text(f"🟢 {len(new)} new Grade {MIN_GRADE}+ setups:\n\n" + "\n".join(lines[:60]))
 
     for r in new[:MAX_CHARTS]:
         try:
-            cap = (f"{r['symbol']}  {r['tf']}\nClose: {r['close']}\n"
-                   f"+{r['above_EMA20_%']}% vs EMA20 | body {r['body_x']}x")
+            cap = (f"{r['symbol']}  {r['tf']}  |  Grade {r['grade']} ({r['score']:.0f}/100)\n"
+                   f"Close: {r['close']}\n"
+                   f"+{r['above_EMA20_%']}% vs EMA20 | body {r['body_x']}x | vol {r['vol_x']}x")
             tg_photo(chart_buf(r), cap)
             time.sleep(1)
         except Exception as e:
