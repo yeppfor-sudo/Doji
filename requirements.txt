@@ -1,6 +1,3 @@
-mplfinance
 requests
 pandas
-numpy
 matplotlib
-six
