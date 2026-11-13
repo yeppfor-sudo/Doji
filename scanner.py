@@ -28,7 +28,11 @@ READY_PCT = 4.0
 MIN_TURNOVER = 50_000
 ALERT_MIN_SCORE = 50
 MIN_RR = 1.0
-BTC_CRASH_BLOCK = 4.0
+
+# ---- BTC regime ----
+BTC_DUMP_PCT = 4.0            # BTC down this % in last 2 closed 4h candles = "dump"
+BTC_MODE = "warn"             # "warn" = still alert with warning, "block" = pause alerts
+BTC_DUMP_MIN_SCORE = 50       # min score during a BTC dump (raise to 60 to be stricter)
 
 WATCHLIST_MAX = 40
 WATCH_MAX_DAYS = 21
@@ -371,8 +375,9 @@ def main():
             results[sym] = (st, h4, info)
 
     btc = btc_regime()
-    btc_blocked = btc["chg2"] <= -BTC_CRASH_BLOCK
-    print("BTC regime:", btc, "| blocked:", btc_blocked)
+    btc_dump = btc["chg2"] <= -BTC_DUMP_PCT
+    btc_blocked = btc_dump and BTC_MODE == "block"
+    print("BTC regime:", btc, "| dump:", btc_dump, "| mode:", BTC_MODE)
 
     # 1) alerts (best score first)
     cands = []
@@ -386,16 +391,23 @@ def main():
         cands.append((total, sym, z, h4, info, price, tgt, rr))
     cands.sort(key=lambda x: x[0], reverse=True)
 
+    min_score = max(ALERT_MIN_SCORE, BTC_DUMP_MIN_SCORE) if btc_dump else ALERT_MIN_SCORE
     for total, sym, z, h4, info, price, tgt, rr in cands:
         if btc_blocked:
             print("BTC crash block, skip", sym)
             continue
-        if total < ALERT_MIN_SCORE or rr < MIN_RR:
+        if total < min_score or rr < MIN_RR:
             print("filtered", sym, round(total, 1), "rr", rr)
             continue
         if now - state["sent"].get(sym, 0) < RESEND_HOURS * 3600:
             continue
-        btc_txt = "BTC 4h above EMA20 ✅" if btc["above"] else "BTC 4h below EMA20 ⚠️"
+        if btc_dump:
+            btc_txt = (f"⚠️ BTC DUMPING ({btc['chg2']}% in 8h) - higher risk, "
+                       f"consider smaller size")
+        elif btc["above"]:
+            btc_txt = "BTC 4h above EMA20 ✅"
+        else:
+            btc_txt = "BTC 4h below EMA20 ⚠️"
         cap = (f"🚀 {sym} | Grade {grade(total)} ({total:.0f}/100)\n"
                f"4h closed green above EMA20 (crossed {info['since']} candles ago, "
                f"vol x{info['vr']}, {info['ext']}% above EMA20)\n"
