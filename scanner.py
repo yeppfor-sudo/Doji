@@ -8,7 +8,6 @@ from datetime import datetime, timezone
 
 BASE = "https://contract.mexc.com/api/v1/contract"
 STATE_FILE = "state.json"
-WATERMARK = "RANJHA"
 
 # ---- weekly accumulation zone rules ----
 MIN_DD = 80
@@ -18,11 +17,7 @@ MAX_ABOVE_LOW = 0.6
 MAX_4W_PUMP = 0.6
 MIN_BARS = 30
 
-# ---- trigger timeframes (4h, 8h, 12h) ----
-TFS = {"4h": "Hour4", "8h": "Hour8", "12h": "Hour12"}
-TF_HOURS = {"Hour4": 4, "Hour8": 8, "Hour12": 12}
-
-# ---- trigger rules (same for every timeframe) ----
+# ---- 4h rules ----
 MIN_BODY_PCT = 0.5
 CROSS_LOOKBACK = 30
 MAX_ABOVE_EMA20 = 12.0
@@ -31,7 +26,7 @@ READY_PCT = 4.0
 
 # ---- smart filters ----
 MIN_TURNOVER = 50_000     # min 24h USDT turnover
-ALERT_MIN_SCORE = 70      # Grade A only
+ALERT_MIN_SCORE = 50      # 0-100
 MIN_RR = 1.0              # min reward/risk (swing SL -> next target)
 BTC_CRASH_BLOCK = 4.0     # pause alerts if BTC fell >4% in last 2 candles
 
@@ -41,7 +36,7 @@ RESEND_HOURS = 24
 
 SKIP = {"TSLA","NVDA","AAPL","MSFT","AMZN","GOOGL","META","COIN","MSTR","HOOD",
         "CRCL","SPY","QQQ","XAU","XAG","GOLD","SILVER","OIL","USOIL"}
-STEP = {"Week1": 604800, "Hour4": 14400, "Hour8": 28800, "Hour12": 43200}
+STEP = {"Week1": 604800, "Hour4": 14400}
 
 
 # ---------------- helpers ----------------
@@ -72,8 +67,6 @@ def save_state(s):
 
 def get_symbols():
     j = get(BASE + "/detail")
-    if not j or not j.get("data"):
-        return [], {}
     syms = []
     for x in j["data"]:
         if x.get("quoteCoin") != "USDT" or x.get("state") != 0:
@@ -105,22 +98,6 @@ def klines(sym, interval, n=500):
                        "l": d["low"], "c": d["close"], "v": vol})
     df["t"] = pd.to_datetime(df.ts, unit="s")
     return df
-
-def to_12h(df4):
-    """MEXC has no 12h interval -> build it from 4h candles (00:00 / 12:00 UTC)."""
-    d = df4.copy()
-    d["k"] = (d.ts // 43200) * 43200
-    out = d.groupby("k").agg(o=("o", "first"), h=("h", "max"), l=("l", "min"),
-                             c=("c", "last"), v=("v", "sum")).reset_index()
-    out = out.rename(columns={"k": "ts"})
-    out["t"] = pd.to_datetime(out.ts, unit="s")
-    return out
-
-def klines_tf(sym, tf, n=300):
-    if tf == "Hour12":
-        raw = klines(sym, "Hour4", n * 3)
-        return to_12h(raw) if raw is not None else None
-    return klines(sym, tf, n)
 
 def closed(df, step):
     if df.ts.iloc[-1] + step > time.time():
@@ -199,17 +176,15 @@ def analyze_zone(sym, gate=True):
         return None
 
 
-# ---------------- trigger status (one timeframe) ----------------
-def tf_status(sym, tf):
+# ---------------- 4h status ----------------
+def h4_status(sym):
     try:
-        h4 = klines_tf(sym, tf, 300)
+        h4 = klines(sym, "Hour4", 300)
         if h4 is None or len(h4) < 60:
             return None, None, {}
         for n in (6, 12, 20):
             h4[f"e{n}"] = ema(h4.c, n)
-        hc = closed(h4, STEP[tf])
-        if len(hc) < 40:
-            return None, None, {}
+        hc = closed(h4, STEP["Hour4"])
         last = hc.iloc[-1]
         body = float((last.c / last.o - 1) * 100)
         ext = float((last.c / last.e20 - 1) * 100)
@@ -224,8 +199,7 @@ def tf_status(sym, tf):
         stack = bool(last.e6 > last.e12 > last.e20)
         slope = bool(last.e20 > hc.e20.iloc[-4])
         swing_sl = float(hc.l.iloc[-12:].min()) * 0.995
-        bars_3d = 72 // TF_HOURS[tf]              # 18 / 9 / 6 candles = 3 days
-        pump3d = float((last.c / hc.l.iloc[-bars_3d:].min() - 1) * 100)
+        pump3d = float((last.c / hc.l.iloc[-18:].min() - 1) * 100)
         green_above = bool(last.c > last.o and last.c > last.e6
                            and last.c > last.e12 and last.c > last.e20
                            and body >= MIN_BODY_PCT)
@@ -243,29 +217,6 @@ def tf_status(sym, tf):
         return status, h4, info
     except Exception:
         return None, None, {}
-
-def all_status(sym):
-    """Run the trigger check on 4h, 8h and 12h."""
-    out = {}
-    for label, tf in TFS.items():
-        st, df, info = tf_status(sym, tf)
-        if info:
-            info["tf"] = label
-        out[label] = (st, df, info)
-    return out
-
-def pick(res):
-    """Best timeframe: triggered (highest score) first, else 'ready' (smallest gap)."""
-    trig = [(l, v) for l, v in res.items() if v[0] == "triggered"]
-    if trig:
-        l, v = max(trig, key=lambda x: (x[1][2]["s4"], TF_HOURS[TFS[x[0]]]))
-        others = [k for k, _ in trig if k != l]
-        return "triggered", l, v[1], v[2], others
-    rd = [(l, v) for l, v in res.items() if v[0] == "ready"]
-    if rd:
-        l, v = min(rd, key=lambda x: x[1][2]["gap"])
-        return "ready", l, v[1], v[2], []
-    return None, None, None, {}, []
 
 def plan(z, price, swing_sl):
     tgt = next((t for t in (z["t1"], z["t2"], z["t3"]) if t > price * 1.03), z["t3"])
@@ -291,10 +242,11 @@ def candles(ax, df):
         ax.plot([i, i], [row.l, row.h], color=col, lw=1)
         ax.bar(i, abs(row.c - row.o), bottom=min(row.o, row.c), color=col, width=0.7)
 
-def make_chart(z, h4, info, total, tgt, tf):
+def make_chart(z, h4, info, total, tgt):
+def make_chart(z, h4, info, total, tgt):
     fig, (a2, a1) = plt.subplots(2, 1, figsize=(12, 13),
                                  gridspec_kw={"height_ratios": [3, 2]})
-    # ---------- trigger timeframe (top, big) ----------
+    # ---------- 4h (top, big) ----------
     h = h4.iloc[-90:].reset_index(drop=True)
     candles(a2, h)
     for n, c in ((6, "#e377c2"), (12, "#ff9f40"), (20, "#6c5ce7")):
@@ -302,7 +254,7 @@ def make_chart(z, h4, info, total, tgt, tf):
     price = float(h.c.iloc[-1])
     sl4 = float(info["swing_sl"])
     a2.axhline(price, color="green", ls=":", lw=1.2, label=f"Live {price:.6g}")
-    a2.axhline(sl4, color="red", ls="--", lw=1.2, label=f"{tf} SL {sl4:.6g}")
+    a2.axhline(sl4, color="red", ls="--", lw=1.2, label=f"4h SL {sl4:.6g}")
     lo = min(float(h.l.min()), sl4) * 0.98
     hi = float(max(h.h.max(), h.e20.max())) * 1.04
     if tgt <= hi * 1.5:                       # draw target only if it fits
@@ -313,7 +265,7 @@ def make_chart(z, h4, info, total, tgt, tf):
     st = max(len(h) // 8, 1)
     a2.set_xticks(range(0, len(h), st))
     a2.set_xticklabels(h.t.dt.strftime("%d %b %H:%M")[::st], fontsize=8)
-    a2.set_title(f'{z["symbol"]} {tf} | Grade {grade(total)} ({total:.0f}/100) | '
+    a2.set_title(f'{z["symbol"]} 4h | Grade {grade(total)} ({total:.0f}/100) | '
                  f'crossed {info["since"]} candles ago | vol x{info["vr"]} | '
                  f'next target {tgt:.6g}', fontsize=12)
     # ---------- weekly (bottom) ----------
@@ -330,11 +282,6 @@ def make_chart(z, h4, info, total, tgt, tf):
     a1.set_xticks(range(0, len(df), st))
     a1.set_xticklabels(df.t.dt.strftime("%b %y")[::st])
     a1.set_title(f'1W | DD {z["dd"]}% | +{z["above_low_pct"]}% above 52w low', fontsize=11)
-
-    # ---------- watermark ----------
-    fig.text(0.5, 0.5, WATERMARK, fontsize=90, color="gray", alpha=0.15,
-             ha="center", va="center", rotation=30, fontweight="bold", zorder=0)
-
     plt.tight_layout()
     buf = io.BytesIO()
     plt.savefig(buf, format="png", dpi=100)
@@ -380,17 +327,15 @@ def debug(sym):
     print(f"WEEKLY  52w low {z['low52']:.6g} | drawdown {z['dd']}% (need >= {MIN_DD})")
     print(f"WEEKLY  above low {z['above_low_pct']}% (need <= {MAX_ABOVE_LOW*100:.0f}) | 4w pump {z['pump4w_pct']}%")
     print(f"WEEKLY  ZONE PASSED: {z['passed']} | RSI {z['rsi']} | div {z['divergence']} | wscore {z['wscore']}/40")
-    res = all_status(sym)
-    for label, (st, h4, info) in res.items():
-        print(f"{label.upper():<7} status: {st}")
-        print(f"{label.upper():<7} {info}")
-        if st == "triggered":
-            total = z["wscore"] + info["s4"]
-            price = float(h4.c.iloc[-1])
-            tgt, rr = plan(z, price, info["swing_sl"])
-            print(f"{label.upper():<7} TOTAL {total:.1f}/100 grade {grade(total)} | need >= {ALERT_MIN_SCORE}")
-            print(f"{label.upper():<7} PLAN price {price:.6g} | SL {info['swing_sl']:.6g} | "
-                  f"target {tgt:.6g} | RR {rr} (need >= {MIN_RR})")
+    st, h4, info = h4_status(sym)
+    print(f"4H      status: {st}")
+    print(f"4H      {info}")
+    if st == "triggered":
+        total = z["wscore"] + info["s4"]
+        price = float(h4.c.iloc[-1])
+        tgt, rr = plan(z, price, info["swing_sl"])
+        print(f"TOTAL   {total:.1f}/100 grade {grade(total)} | need >= {ALERT_MIN_SCORE}")
+        print(f"PLAN    price {price:.6g} | 4h SL {info['swing_sl']:.6g} | target {tgt:.6g} | RR {rr} (need >= {MIN_RR})")
 
 
 # ---------------- main ----------------
@@ -407,9 +352,6 @@ def main():
 
     syms, turn = get_symbols()
     print("pairs (liquid crypto):", len(syms))
-    if not syms:
-        print("no pairs returned by MEXC, exiting")
-        return
     with ThreadPoolExecutor(6) as ex:
         zones = [z for z in ex.map(analyze_zone, syms) if z]
     zmap = {z["symbol"]: z for z in zones}
@@ -421,13 +363,13 @@ def main():
             if z:
                 zmap[s] = z
 
-    # results[sym] = (status, tf_label, df, info, other_triggered_tfs)
     results = {}
     def chk(sym):
-        return sym, pick(all_status(sym))
+        st, h4, info = h4_status(sym)
+        return sym, st, h4, info
     with ThreadPoolExecutor(6) as ex:
-        for sym, r in ex.map(chk, list(zmap)):
-            results[sym] = r
+        for sym, st, h4, info in ex.map(chk, list(zmap)):
+            results[sym] = (st, h4, info)
 
     btc = btc_regime()
     btc_blocked = btc["chg2"] <= -BTC_CRASH_BLOCK
@@ -435,40 +377,38 @@ def main():
 
     # 1) alerts (best score first)
     cands = []
-    for sym, (st, tf, h4, info, others) in results.items():
+    for sym, (st, h4, info) in results.items():
         if st != "triggered":
             continue
         z = zmap[sym]
         total = z["wscore"] + info["s4"]
         price = float(h4.c.iloc[-1])
         tgt, rr = plan(z, price, info["swing_sl"])
-        cands.append((total, sym, z, h4, info, price, tgt, rr, tf, others))
+        cands.append((total, sym, z, h4, info, price, tgt, rr))
     cands.sort(key=lambda x: x[0], reverse=True)
 
-    for total, sym, z, h4, info, price, tgt, rr, tf, others in cands:
+    for total, sym, z, h4, info, price, tgt, rr in cands:
         if btc_blocked:
             print("BTC crash block, skip", sym)
             continue
-        if grade(total) != "A" or total < ALERT_MIN_SCORE or rr < MIN_RR:
-            print("filtered (not grade A / low RR)", sym, tf, round(total, 1), "rr", rr)
+        if total < ALERT_MIN_SCORE or rr < MIN_RR:
+            print("filtered", sym, round(total, 1), "rr", rr)
             continue
         if now - state["sent"].get(sym, 0) < RESEND_HOURS * 3600:
             continue
         btc_txt = "BTC 4h above EMA20 ✅" if btc["above"] else "BTC 4h below EMA20 ⚠️"
-        oth_txt = f"Also triggered: {', '.join(others)}\n" if others else ""
-        cap = (f"🚀 {sym} | {tf} | Grade {grade(total)} ({total:.0f}/100)\n"
-               f"{tf} closed green above EMA20 (crossed {info['since']} candles ago, "
+        cap = (f"🚀 {sym} | Grade {grade(total)} ({total:.0f}/100)\n"
+               f"4h closed green above EMA20 (crossed {info['since']} candles ago, "
                f"vol x{info['vr']}, {info['ext']}% above EMA20)\n"
-               f"{oth_txt}"
                f"Live: {price:.6g}\n"
-               f"{tf} SL: {info['swing_sl']:.6g} | Weekly SL: {z['sl']:.6g}\n"
+               f"4h SL: {info['swing_sl']:.6g} | Weekly SL: {z['sl']:.6g}\n"
                f"Next target: {tgt:.6g} | R:R {rr}\n"
                f"T1 {z['t1']:.6g} | T2 {z['t2']:.6g} | T3 {z['t3']:.6g}\n"
                f"DD from ATH {z['dd']}% | +{z['above_low_pct']}% above 52w low | "
                f"RSI(1W) {z['rsi']} | Div {z['divergence']}\n"
                f"{btc_txt}")
         try:
-            if tg_photo(make_chart(z, h4, info, total, tgt, tf), cap):
+            if tg_photo(make_chart(z, h4, info, total, tgt), cap):
                 state["sent"][sym] = now
                 state["watchlist"].pop(sym, None)
         except Exception as e:
@@ -478,46 +418,40 @@ def main():
     for sym in list(state["watchlist"]):
         w = state["watchlist"][sym]
         z = zmap.get(sym)
-        try:
-            age_days = (now - datetime.fromisoformat(w["added"]).timestamp()) / 86400
-        except Exception:
-            age_days = 0
-            w["added"] = now_iso
+        age_days = (now - datetime.fromisoformat(w["added"]).timestamp()) / 86400
         if z is None or not z["passed"] or age_days > WATCH_MAX_DAYS:
             state["watchlist"].pop(sym)
             continue
-        st, tf, h4, info, _ = results.get(sym, (None, None, None, {}, []))
+        st, h4, info = results.get(sym, (None, None, {}))
         if st == "ready":
             w["score"] = round(z["wscore"] + max(0, (READY_PCT - info["gap"]) / READY_PCT) * 20, 1)
             w["gap_pct"] = info["gap"]
-            w["tf"] = tf
 
     # 3) add new "ready to cross" pairs (each pair saved once)
     new = []
-    for sym, (st, tf, h4, info, _) in results.items():
+    for sym, (st, h4, info) in results.items():
         z = zmap[sym]
         if st == "ready" and z["passed"] and sym not in state["watchlist"]:
             sc = z["wscore"] + max(0, (READY_PCT - info["gap"]) / READY_PCT) * 20
-            new.append((sc, sym, z, info, tf))
-    new.sort(key=lambda x: x[0], reverse=True)
-    for sc, sym, z, info, tf in new:
+            new.append((sc, sym, z, info))
+    new.sort(reverse=True)
+    for sc, sym, z, info in new:
         state["watchlist"][sym] = dict(added=now_iso, score=round(sc, 1),
-                                       gap_pct=info["gap"], tf=tf,
-                                       zone_low=z["zone_low"],
+                                       gap_pct=info["gap"], zone_low=z["zone_low"],
                                        zone_high=z["zone_high"], sl=z["sl"])
 
     if len(state["watchlist"]) > WATCHLIST_MAX:
-        keep = sorted(state["watchlist"].items(), key=lambda kv: kv[1].get("score", 0),
+        keep = sorted(state["watchlist"].items(), key=lambda kv: kv[1]["score"],
                       reverse=True)[:WATCHLIST_MAX]
         state["watchlist"] = dict(keep)
 
     # 4) daily watchlist summary (once per UTC day)
     today = now_dt.strftime("%Y-%m-%d")
     if state.get("last_summary") != today and state["watchlist"]:
-        rows = sorted(state["watchlist"].items(), key=lambda kv: kv[1].get("score", 0), reverse=True)
-        lines = [f"📋 Watchlist ({len(rows)}) - ready to cross EMA20 (4h/8h/12h)"]
+        rows = sorted(state["watchlist"].items(), key=lambda kv: kv[1]["score"], reverse=True)
+        lines = [f"📋 Watchlist ({len(rows)}) - ready to cross 4h EMA20"]
         for i, (s, w) in enumerate(rows, 1):
-            lines.append(f"{i}. {s}  [{w.get('tf', '4h')}]  score {w.get('score', '?')}  gap {w.get('gap_pct', '?')}%")
+            lines.append(f"{i}. {s}  score {w['score']}  gap {w.get('gap_pct', '?')}%")
         tg_text("\n".join(lines))
         state["last_summary"] = today
 
