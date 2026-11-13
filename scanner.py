@@ -21,14 +21,14 @@ MIN_BARS = 30
 MIN_BODY_PCT = 0.5
 CROSS_LOOKBACK = 30
 MAX_ABOVE_EMA20 = 12.0
-MAX_3D_PUMP = 45.0        # skip if already +45% in last 3 days
+MAX_3D_PUMP = 45.0
 READY_PCT = 4.0
 
 # ---- smart filters ----
-MIN_TURNOVER = 50_000     # min 24h USDT turnover
-ALERT_MIN_SCORE = 50      # 0-100
-MIN_RR = 1.0              # min reward/risk (swing SL -> next target)
-BTC_CRASH_BLOCK = 4.0     # pause alerts if BTC fell >4% in last 2 candles
+MIN_TURNOVER = 50_000
+ALERT_MIN_SCORE = 50
+MIN_RR = 1.0
+BTC_CRASH_BLOCK = 4.0
 
 WATCHLIST_MAX = 40
 WATCH_MAX_DAYS = 21
@@ -133,7 +133,7 @@ def weekly_score(dd, above, rng, r, div):
     s += max(0, 1 - rng / 1.5) * 7
     s += 5 if r < 40 else (2 if r < 50 else 0)
     s += 3 if div else 0
-    return s                                   # max 40
+    return s
 
 def trigger_score(since, vr, body, stack, slope, ext):
     s = 20 if since <= 3 else 14 if since <= 8 else 8 if since <= 15 else 3
@@ -142,7 +142,7 @@ def trigger_score(since, vr, body, stack, slope, ext):
     s += 7 if stack else 0
     s += 5 if slope else 0
     s += 5 if ext <= 4 else 2 if ext <= 8 else 0
-    return s                                   # max 60
+    return s
 
 
 # ---------------- weekly accumulation zone ----------------
@@ -243,7 +243,6 @@ def candles(ax, df):
         ax.bar(i, abs(row.c - row.o), bottom=min(row.o, row.c), color=col, width=0.7)
 
 def make_chart(z, h4, info, total, tgt):
-def make_chart(z, h4, info, total, tgt):
     fig, (a2, a1) = plt.subplots(2, 1, figsize=(12, 13),
                                  gridspec_kw={"height_ratios": [3, 2]})
     # ---------- 4h (top, big) ----------
@@ -257,7 +256,7 @@ def make_chart(z, h4, info, total, tgt):
     a2.axhline(sl4, color="red", ls="--", lw=1.2, label=f"4h SL {sl4:.6g}")
     lo = min(float(h.l.min()), sl4) * 0.98
     hi = float(max(h.h.max(), h.e20.max())) * 1.04
-    if tgt <= hi * 1.5:                       # draw target only if it fits
+    if tgt <= hi * 1.5:
         a2.axhline(tgt, color="blue", ls="--", lw=1.2, label=f"Target {tgt:.6g}")
         hi = max(hi, tgt * 1.02)
     a2.set_ylim(lo, hi)
