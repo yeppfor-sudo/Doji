@@ -26,13 +26,13 @@ READY_PCT = 4.0
 
 # ---- smart filters ----
 MIN_TURNOVER = 50_000
-ALERT_MIN_SCORE = 50
+ALERT_MIN_SCORE = 70          # GRADE A ONLY
 MIN_RR = 1.0
 
 # ---- BTC regime ----
-BTC_DUMP_PCT = 4.0            # BTC down this % in last 2 closed 4h candles = "dump"
+BTC_DUMP_PCT = 4.0
 BTC_MODE = "warn"             # "warn" = still alert with warning, "block" = pause alerts
-BTC_DUMP_MIN_SCORE = 50       # min score during a BTC dump (raise to 60 to be stricter)
+BTC_DUMP_MIN_SCORE = 70
 
 WATCHLIST_MAX = 40
 WATCH_MAX_DAYS = 21
